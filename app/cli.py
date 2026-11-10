@@ -113,7 +113,11 @@ def cmd_fetch(args) -> None:
     with connection.session() as conn:
         company = _get_company(conn, args.company)
         try:
-            fetched = downloader.fetch_for_company(conn, company, years=args.years, allow_hk=args.allow_hk)
+            fetched = downloader.fetch_for_company(
+                conn, company, years=args.years, allow_hk=args.allow_hk,
+                period_types=[t.strip() for t in args.types.split(",") if t.strip()],
+                limit=args.limit,
+            )
         except downloader.FetchError as exc:
             print(f"自动获取失败：{exc}")
             print("可改用手工投递：python -m app.cli ingest --company ID --file <文件>")
@@ -160,8 +164,13 @@ def cmd_confirm(args) -> None:
         if args.high:
             count = metric_service.confirm_high_confidence(conn, args.company)
             print(f"已确认高置信度指标值 {count} 项")
+        if getattr(args, "all", False):
+            items = metric_service.pending_items(conn, args.company)
+            for item in items:
+                metric_service.confirm_value(conn, item["id"])
+            print(f"已确认全部待确认指标值 {len(items)} 项")
         pending = metric_service.pending_items(conn, args.company)
-        if pending and not args.high and not args.value_id:
+        if pending and not args.high and not args.value_id and not getattr(args, "all", False):
             print(f"仍有 {len(pending)} 项待确认（可用 --high 或 --value-id 逐项确认）")
 
 
@@ -308,6 +317,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("fetch", help="自动获取年报（A 股巨潮 / 美股 SEC）")
     p.add_argument("--company", type=int, required=True)
     p.add_argument("--years", type=int, default=5)
+    p.add_argument("--types", default="annual",
+                   help="逗号分隔：annual,h1,q1,q3（默认仅年报）")
+    p.add_argument("--limit", type=int, default=10, help="单次最多下载份数")
     p.add_argument("--allow-hk", action="store_true")
     p.add_argument("--ingest", action="store_true")
     p.set_defaults(func=cmd_fetch)
@@ -320,6 +332,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--company", type=int, required=True)
     p.add_argument("--value-id", type=int, action="append")
     p.add_argument("--high", action="store_true")
+    p.add_argument("--all", action="store_true", help="确认全部待确认项（助手侧批量确认）")
     p.set_defaults(func=cmd_confirm)
 
     p = sub.add_parser("override", help="人工改值")

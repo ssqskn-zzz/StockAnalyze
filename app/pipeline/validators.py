@@ -52,11 +52,12 @@ def validate_period(values: dict[str, float | None]) -> list[Finding]:
     amount_check("K3", "负债合计 + 所有者权益 = 资产总计",
                  ("total_liabilities", "total_equity"), "total_assets", rel=1e-3)
 
-    ocf, icf, fcf_, delta = _get(values, "ocf", "investing_cf", "financing_cf", "net_cash_increase")
+    ocf, icf, fcf_, delta, fx = _get(values, "ocf", "investing_cf", "financing_cf",
+                                      "net_cash_increase", "fx_effect")
     if _all_present(ocf, icf, fcf_, delta):
-        total = ocf + icf + fcf_  # type: ignore[operator]
-        ok = _close(total, delta, rel=5e-3)  # type: ignore[arg-type]
-        findings.append(Finding("K5", "经营 + 投资 + 筹资 ≈ 现金净增加额", "pass" if ok else "fail",
+        total = ocf + icf + fcf_ + (fx or 0)  # type: ignore[operator]
+        ok = _close(total, delta, rel=1e-3)  # type: ignore[arg-type]
+        findings.append(Finding("K5", "经营 + 投资 + 筹资 + 汇率影响 ≈ 现金净增加额", "pass" if ok else "fail",
                                 "" if ok else f"合计 {total:,.0f} vs {delta:,.0f}"))
     else:
         findings.append(Finding("K5", "经营 + 投资 + 筹资 ≈ 现金净增加额", "skip", "缺项，未校验"))

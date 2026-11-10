@@ -34,13 +34,13 @@ GROUP_TITLES = {
 METRICS: tuple[MetricDef, ...] = (
     # G1 主要经营指标
     MetricDef("revenue", "营业收入", "G1", "amount", "合并利润表营业总收入（不含营业外收入）", aliases=("营业总收入", "营业收入", "主营业务收入", "revenue", "totalrevenue")),
-    MetricDef("net_profit_deducted", "扣非净利润", "G1", "amount", "扣除非经常性损益后归属于母公司股东的净利润", aliases=("扣除非经常性损益后的归属于母公司股东的净利润", "扣除非经常性损益后归属于母公司股东的净利润", "扣非净利润", "扣除非经常性损益后的净利润")),
-    MetricDef("net_profit_parent", "归母净利润", "G1", "amount", "归属于母公司股东的净利润", aliases=("归属于母公司股东的净利润", "归属于母公司所有者的净利润", "归母净利润")),
+    MetricDef("net_profit_deducted", "扣非净利润", "G1", "amount", "扣除非经常性损益后归属于母公司股东的净利润", aliases=("扣除非经常性损益后的归属于母公司股东的净利润", "扣除非经常性损益后归属于母公司股东的净利润", "扣非净利润", "扣除非经常性损益后的净利润", "归属于上市公司股东的扣除非经常性损益的净利润", "归属于上市公司股东的扣除非经常性损益后的净利润")),
+    MetricDef("net_profit_parent", "归母净利润", "G1", "amount", "归属于母公司股东的净利润", aliases=("归属于母公司股东的净利润", "归属于母公司所有者的净利润", "归属于上市公司股东的净利润", "归母净利润")),
     MetricDef("net_profit", "净利润", "G1", "amount", "含少数股东损益的净利润", aliases=("净利润", "netincome")),
     MetricDef("ocf", "经营活动现金流量净额", "G1", "amount", "经营活动产生的现金流量净额", is_valuation_required=True, aliases=("经营活动产生的现金流量净额", "经营活动现金流量净额", "经营现金流净额", "netcashfromoperatingactivities")),
 
     # G2 成本结构
-    MetricDef("operating_cost", "营业成本", "G2", "amount", "合并利润表营业成本", aliases=("营业成本", "营业总成本")),
+    MetricDef("operating_cost", "营业成本", "G2", "amount", "合并利润表营业成本", aliases=("营业成本",)),
     MetricDef("selling_expense", "销售费用", "G2", "amount", "销售费用", aliases=("销售费用",)),
     MetricDef("admin_expense", "管理费用", "G2", "amount", "管理费用", aliases=("管理费用",)),
     MetricDef("rnd_expense", "研发费用", "G2", "amount", "研发费用", aliases=("研发费用",)),
@@ -71,7 +71,7 @@ METRICS: tuple[MetricDef, ...] = (
     MetricDef("long_term_borrowings", "长期借款", "G3", "amount", "长期借款", is_valuation_required=True, aliases=("长期借款",)),
     MetricDef("bonds_payable", "应付债券", "G3", "amount", "应付债券", is_valuation_required=True, aliases=("应付债券",)),
     MetricDef("non_current_liabilities_total", "非流动负债合计", "G3", "amount", "非流动负债合计", aliases=("非流动负债合计",)),
-    MetricDef("total_equity", "所有者权益合计", "G3", "amount", "所有者权益（股东权益）合计", aliases=("所有者权益合计", "股东权益合计", "归属于母公司所有者权益合计")),
+    MetricDef("total_equity", "所有者权益合计", "G3", "amount", "所有者权益（股东权益）合计", aliases=("所有者权益合计", "股东权益合计", "归属于上市公司股东的所有者权益")),
     MetricDef("share_capital", "股本", "G3", "amount", "股本（总股本面值）", is_valuation_required=True, aliases=("股本", "实收资本")),
     MetricDef("total_assets", "资产总计", "G3", "amount", "资产总计", aliases=("资产总计", "资产合计")),
     MetricDef("total_liabilities", "负债合计", "G3", "amount", "负债合计", aliases=("负债合计",)),
@@ -81,6 +81,7 @@ METRICS: tuple[MetricDef, ...] = (
     MetricDef("investing_cf", "投资活动现金流量净额", "G4", "amount", "投资活动产生的现金流量净额", aliases=("投资活动产生的现金流量净额", "投资活动现金流量净额")),
     MetricDef("financing_cf", "筹资活动现金流量净额", "G4", "amount", "筹资活动产生的现金流量净额", aliases=("筹资活动产生的现金流量净额", "筹资活动现金流量净额")),
     MetricDef("net_cash_increase", "现金及现金等价物净增加额", "G4", "amount", "现金及现金等价物净增加额", aliases=("现金及现金等价物净增加额", "现金及等价物净增加额")),
+    MetricDef("fx_effect", "汇率变动对现金的影响", "G4", "amount", "汇率变动对现金及现金等价物的影响", aliases=("汇率变动对现金及现金等价物的影响", "汇率变动对现金的影响")),
 
     # G5 分部数据（必须带维度）
     MetricDef("segment_revenue", "分部收入", "G5", "amount", "按产品/区域拆分的营业收入", dimension_type="product", aliases=("分产品收入", "分区域收入", "营业收入")),
@@ -102,7 +103,7 @@ def normalize_label(text: str) -> str:
     if text is None:
         return ""
     s = str(text)
-    for token in (" ", "\u3000", "\n", "\r", "\t", "：", ":", "（", "）", "(", ")", "其中", "加", "减", "—", "-"):
+    for token in (" ", "\u3000", "\n", "\r", "\t", "：", ":", "（", "）", "(", ")", "其中", "加", "减", "—", "-", "或股东权益", "或股本"):
         s = s.replace(token, "")
     for suffix in ("元", "万元", "亿元", "千元", "百万元"):
         if s.endswith(suffix) and len(s) > len(suffix) + 1:

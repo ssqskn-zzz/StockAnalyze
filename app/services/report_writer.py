@@ -140,10 +140,7 @@ def build_content(
     ratio_rows = []
     for label, code in (("扣非 ROE", "roe_deducted"), ("扣非净利率", "net_margin_deducted"),
                         ("经营净现金流 ÷ 净利润", "ocf_to_net_profit")):
-        ratio_rows.append([label] + [
-            f"{item['derived'].get(code):.2f}" if item["derived"].get(code) is not None else "—"
-            for item in recent
-        ])
+        ratio_rows.append([label] + [_pct(item["derived"].get(code)) for item in recent])
     part2_blocks += [
         {"type": "heading", "text": "2.3 毛利率与扣非 ROE 走势"},
         _table("回报与利润率", cols, ratio_rows),
@@ -163,7 +160,7 @@ def build_content(
     ]
     part2_blocks += [
         {"type": "heading", "text": "2.4 季度节奏"},
-        _table("最近四个季度累计值", q_cols, q_rows,
+        _table("最近四期累计经营数据", q_cols, q_rows,
                "季报/半年报披露的是累计值；单季值需由差值计算，本版不自动计算。") if q_recent
         else _note("库内暂无季度材料，季度节奏待补充半年报/季报后生成。"),
     ]

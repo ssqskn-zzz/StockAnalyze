@@ -20,6 +20,7 @@ import requests
 
 from app import config
 from app.db.repositories import companies as company_repo
+from app.pipeline.period_detector import detect_period
 from app.utils import now_iso
 
 SEC_UA = "StockAnalyze/0.1 (internal research; contact: local-user)"
@@ -27,6 +28,13 @@ CNINFO_UA = "Mozilla/5.0 (compatible; StockAnalyze/0.1; internal research)"
 CNINFO_QUERY = "http://www.cninfo.com.cn/new/hisAnnouncement/query"
 CNINFO_SEARCH = "http://www.cninfo.com.cn/new/information/topSearch/query"
 CNINFO_STATIC = "http://static.cninfo.com.cn/"
+CNINFO_CATEGORIES = {
+    "annual": ("category_ndbg_szsh", "年度报告"),
+    "h1": ("category_bndbg_szsh", "半年度报告"),
+    "q1": ("category_yjdbg_szsh", "第一季度报告"),
+    "q3": ("category_sjdbg_szsh", "第三季度报告"),
+}
+CNINFO_EXCLUDE = ("摘要", "英文", "已取消", "更正", "问询", "说明")
 SEC_TICKERS = "https://www.sec.gov/files/company_tickers.json"
 SEC_SUBMISSIONS = "https://data.sec.gov/submissions/CIK{cik}.json"
 SEC_ARCHIVE = "https://www.sec.gov/Archives/edgar/data/{cik}/{accession}/{document}"
@@ -155,8 +163,11 @@ def _cninfo_org(conn, session: requests.Session, company, code: str) -> tuple[st
     raise FetchError(f"巨潮未找到证券代码：{code}")
 
 
-def fetch_cninfo(conn, company, *, years: int = 5, limit: int = 10) -> list[dict[str, Any]]:
-    """按证券代码检索巨潮"年度报告"公告并下载 PDF。"""
+def fetch_cninfo(
+    conn, company, *, years: int = 5, limit: int = 10,
+    period_types: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """按证券代码检索巨潮公告并下载 PDF（年报/半年报/一季报/三季报）。"""
     code = company["code"]
     if not code:
         raise FetchError("A 股企业缺少证券代码")
@@ -164,61 +175,78 @@ def fetch_cninfo(conn, company, *, years: int = 5, limit: int = 10) -> list[dict
     session.headers.update({"User-Agent": CNINFO_UA, "Referer": "http://www.cninfo.com.cn/"})
     org_id, column = _cninfo_org(conn, session, company, code)
     end_year = int(now_iso()[:4])
-    payload = {
-        "pageNum": 1,
-        "pageSize": 30,
-        "column": column,
-        "tabName": "fulltext",
-        "plate": "",
-        "stock": f"{code},{org_id}",
-        "searchkey": "",
-        "secid": "",
-        "category": "category_ndbg_szsh",
-        "trade": "",
-        "seDate": f"{end_year - years}-01-01~{end_year}-12-31",
-        "sortName": "",
-        "sortType": "",
-        "isHLtitle": "true",
-    }
-    resp = _request(conn, session, channel="cninfo", url=CNINFO_QUERY, company_id=company["id"],
-                    method="POST", data=payload)
-    body = resp.json()
-    announcements = body.get("announcements") or []
+    period_types = period_types or ["annual"]
     picked: list[dict[str, Any]] = []
-    for item in announcements:
-        title = item.get("announcementTitle") or ""
-        if "摘要" in title or "英文" in title or "已取消" in title:
-            continue
-        adjunct = item.get("adjunctUrl")
-        if not adjunct:
-            continue
-        url = CNINFO_STATIC + adjunct
-        try:
-            file_resp = _request(conn, session, channel="cninfo", url=url, company_id=company["id"])
-        except FetchError as exc:
-            picked.append({"error": str(exc), "url": url})
-            continue
-        filename = f"{code}_{title.replace('/', '_')}.pdf"
-        saved = _save(config.DATA_DIR / "downloads" / filename, file_resp.content)
-        picked.append({
-            "path": str(saved),
-            "filename": filename,
-            "channel": "cninfo",
-            "source_url": url,
-            "announcement_no": str(item.get("announcementId") or ""),
-            "disclosure_date": str(item.get("announcementTime") or "")[:10],
-        })
-        if len(picked) >= min(limit, config.FETCH_MAX_FILES):
-            break
+    seen_urls: set[str] = set()
+
+    for period_type in period_types:
+        if period_type not in CNINFO_CATEGORIES:
+            raise FetchError(f"不支持的公告类型：{period_type}")
+        category, keyword = CNINFO_CATEGORIES[period_type]
+        payload = {
+            "pageNum": 1,
+            "pageSize": 30,
+            "column": column,
+            "tabName": "fulltext",
+            "plate": "",
+            "stock": f"{code},{org_id}",
+            "searchkey": "",
+            "secid": "",
+            "category": category,
+            "trade": "",
+            "seDate": f"{end_year - years}-01-01~{end_year}-12-31",
+            "sortName": "",
+            "sortType": "",
+            "isHLtitle": "true",
+        }
+        resp = _request(conn, session, channel="cninfo", url=CNINFO_QUERY, company_id=company["id"],
+                        method="POST", data=payload)
+        announcements = resp.json().get("announcements") or []
+        for item in announcements:
+            title = item.get("announcementTitle") or ""
+            if keyword not in title or any(word in title for word in CNINFO_EXCLUDE):
+                continue
+            period = detect_period(title)
+            if not period or period[0] != period_type or period[1] < end_year - years:
+                continue
+            adjunct = item.get("adjunctUrl")
+            if not adjunct:
+                continue
+            url = CNINFO_STATIC + adjunct
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+            try:
+                file_resp = _request(conn, session, channel="cninfo", url=url, company_id=company["id"])
+            except FetchError as exc:
+                picked.append({"error": str(exc), "url": url})
+                continue
+            filename = f"{code}_{title.replace('/', '_')}.pdf"
+            saved = _save(config.DATA_DIR / "downloads" / filename, file_resp.content)
+            picked.append({
+                "path": str(saved),
+                "filename": filename,
+                "channel": "cninfo",
+                "period_type": period_type,
+                "fiscal_year": period[1],
+                "source_url": url,
+                "announcement_no": str(item.get("announcementId") or ""),
+                "disclosure_date": str(item.get("announcementTime") or "")[:10],
+            })
+            if len(picked) >= min(limit, config.FETCH_MAX_FILES):
+                return picked
     if not picked:
-        raise FetchError("巨潮未检索到年度报告（可能代码或市场不匹配，或接口字段变化）")
+        raise FetchError("巨潮未检索到匹配公告（可能代码/类型不匹配，或接口字段变化）")
     return picked
 
 
-def fetch_for_company(conn, company, *, years: int = 5, allow_hk: bool = False) -> list[dict[str, Any]]:
+def fetch_for_company(
+    conn, company, *, years: int = 5, allow_hk: bool = False,
+    period_types: list[str] | None = None, limit: int = 10,
+) -> list[dict[str, Any]]:
     market = company["market"]
     if market == "A":
-        return fetch_cninfo(conn, company, years=years)
+        return fetch_cninfo(conn, company, years=years, period_types=period_types, limit=limit)
     if market == "US":
         return fetch_sec(conn, company, years=years)
     if market == "HK":

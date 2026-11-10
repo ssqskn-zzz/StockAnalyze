@@ -316,7 +316,7 @@ def dispute(conn: sqlite3.Connection, value_id: int, reason: str, actor: str = "
 def pending_values(conn: sqlite3.Connection, company_id: int) -> list[sqlite3.Row]:
     return list(conn.execute(
         """SELECT mv.*, m.code AS metric_code, m.name AS metric_name, m.group_code,
-                  p.period_type, p.fiscal_year, p.period_seq
+                  m.unit_type, p.period_type, p.fiscal_year, p.period_seq
            FROM metric_values mv
            JOIN metrics m ON m.id = mv.metric_id
            JOIN periods p ON p.id = mv.period_id
