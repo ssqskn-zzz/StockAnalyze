@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}版本与来源 · {{ company.name }}{% endblock %}
+{% block content %}
+<div class="crumbs"><a href="/">企业</a> / <a href="/companies/{{ company.id }}">{{ company.name }}</a> / 版本与来源</div>
+<div class="page-head">
+  <div>
+    <h1>版本与来源</h1>
+    <p class="muted">文件 → 抽取批次 → 指标值 → 数据快照 → 报告版本 / 估值版本，每个环节都留痕。</p>
+  </div>
+  <div class="actions">
+    <a class="btn" href="/processing">处理记录</a>
+    <a class="btn" href="/companies/{{ company.id }}/data">数据矩阵</a>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>时间轴</h2><span class="small muted">{{ events|length }} 条</span></div>
+  <div class="timeline">
+    {% for event in events %}
+    <div class="timeline-item">
+      <div class="t">{{ event.time }} · {{ event.kind }}</div>
+      <div class="h">{{ event.title }}</div>
+      {% if event.detail %}<div class="small muted">{{ event.detail }}</div>{% endif %}
+    </div>
+    {% else %}
+    <p class="muted small">暂无记录。</p>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

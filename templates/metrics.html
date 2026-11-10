@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}指标字典 · 价值投资工作台{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>指标字典</h1>
+    <p class="muted">受控指标条目；抽取、报告、估值只能引用这里的 code。"必需"表示估值必需项，缺失会影响股权价值与发布。</p>
+  </div>
+</div>
+
+{% for group in groups %}
+<div class="card">
+  <div class="card-head"><h2>{{ group.title }}</h2><span class="small muted">{{ group.metrics|length }} 项</span></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>code</th><th>名称</th><th>单位类型</th><th>维度</th><th>估值必需</th><th>定义</th></tr></thead>
+      <tbody>
+        {% for m in group.metrics %}
+        <tr>
+          <td class="mono small">{{ m.code }}</td>
+          <td>{{ m.name }}</td>
+          <td>{{ m.unit_type }}</td>
+          <td>{{ m.dimension_type }}</td>
+          <td>{% if m.required %}<span class="badge gray">必需</span>{% else %}—{% endif %}</td>
+          <td class="small muted">{{ m.definition }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endfor %}
+{% endblock %}

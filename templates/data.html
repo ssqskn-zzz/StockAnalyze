@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}数据矩阵 · {{ company.name }}{% endblock %}
+{% block content %}
+<div class="crumbs"><a href="/">企业</a> / <a href="/companies/{{ company.id }}">{{ company.name }}</a> / 数据矩阵</div>
+<div class="page-head">
+  <div>
+    <h1>数据矩阵</h1>
+    <p class="muted">金额单位：亿元。行 = 受控指标，列 = 报告期；点开待确认单元格可确认、改值或标记争议。</p>
+  </div>
+  <div class="actions">
+    <a class="btn {{ 'primary' if scope == 'all' else '' }}" href="?scope=all">年报 + 季报</a>
+    <a class="btn {{ 'primary' if scope == 'annual' else '' }}" href="?scope=annual">仅年报</a>
+    <a class="btn" href="/companies/{{ company.id }}/pending">待确认清单</a>
+  </div>
+</div>
+
+<div class="callout small">
+  完整度（估值必需指标，最近 5 个年报）：<strong>{{ '%.0f%%'|format(completeness.ratio * 100) }}</strong>
+  （{{ completeness.ok }}/{{ completeness.total }}）。
+  图例：<span class="dot pending"></span>待确认
+  <span class="dot confirmed"></span>已确认
+  <span class="dot locked"></span>已锁定
+  <span class="dot disputed"></span>有争议
+  <span class="dot derived"></span>衍生计算
+</div>
+
+{% for group in matrix.groups %}
+{% if group.code != 'G5' and group.code != 'G6' %}
+<div class="card">
+  <div class="card-head"><h2>{{ group.title }}</h2></div>
+  <div class="table-wrap">
+    <table class="matrix">
+      <thead>
+        <tr>
+          <th>指标</th>
+          {% for p in matrix.periods %}<th class="num">{{ p.label }}</th>{% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for metric in group.metrics %}
+        <tr>
+          <td>{{ metric.name }}{% if metric.required %}<span class="badge gray" title="估值必需指标">必需</span>{% endif %}</td>
+          {% for p in matrix.periods %}
+          {% set cell = metric.cells[p.id] %}
+          <td class="num">
+            {% if cell.value is none %}
+              <span class="muted">—</span>
+            {% elif cell.status in ['pending', 'extracted', 'disputed'] %}
+              <details class="cell">
+                <summary><span class="dot {{ cell.status }}"></span>{{ cell.value|cell(metric.unit_type) }}</summary>
+                <div class="pop inline">
+                  <div class="small muted" style="margin-bottom: 6px;">{{ p.label }} · {{ metric.name }}</div>
+                  {% if cell.status != 'disputed' %}
+                  <form method="post" action="/values/{{ cell.value_id }}/confirm">
+                    <input type="hidden" name="next" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
+                    <button class="btn sm primary" type="submit">确认该值</button>
+                  </form>
+                  {% endif %}
+                  <form method="post" action="/values/{{ cell.value_id }}/override" style="margin-top: 8px;">
+                    <input type="hidden" name="next" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
+                    <label>改值（口径：{{ metric.unit_type }}）</label>
+                    <input type="number" step="any" name="value" value="{{ cell.value }}" required>
+                    <label>改值原因（必填）</label>
+                    <input type="text" name="reason" required>
+                    <button class="btn sm" type="submit" style="margin-top: 6px;">提交改值</button>
+                  </form>
+                  <form method="post" action="/values/{{ cell.value_id }}/dispute" style="margin-top: 8px;">
+                    <input type="hidden" name="next" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
+                    <input type="text" name="reason" placeholder="争议原因">
+                    <button class="btn sm danger" type="submit" style="margin-top: 4px;">标记争议</button>
+                  </form>
+                </div>
+              </details>
+            {% else %}
+              <span class="dot {{ cell.status }}{% if metric.derived %} derived{% endif %}"></span>{{ cell.value|cell(metric.unit_type) }}
+            {% endif %}
+          </td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endfor %}
+
+<div class="card">
+  <div class="card-head"><h2>G5 分部数据</h2><span class="small muted">分产品 / 分区域</span></div>
+  {% if matrix.segments %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>报告期</th><th>维度</th><th>名称</th><th>指标</th><th class="num">数值</th><th>状态</th></tr></thead>
+      <tbody>
+        {% for s in matrix.segments %}
+        <tr>
+          <td class="nowrap">{{ s.period_label }}</td>
+          <td>{{ '产品' if s.dimension_type == 'product' else '区域' }}</td>
+          <td>{{ s.name }}</td>
+          <td>{{ s.metric }}</td>
+          <td class="num">{{ s.value|cell(s.unit_type) }}</td>
+          <td><span class="dot {{ s.status }}"></span>{{ status_labels.get(s.status, s.status) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted small">尚无分部数据。可在导入文件的「分部数据」工作表中提供：维度类型｜维度名称｜指标｜期间列。</p>
+  {% endif %}
+</div>
+{% endblock %}

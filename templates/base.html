@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}价值投资工作台{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">价值投资工作台<span>P0</span></a>
+  <nav>
+    <a href="/" class="{{ 'active' if page == 'index' else '' }}">企业</a>
+    <a href="/processing" class="{{ 'active' if page == 'processing' else '' }}">处理记录</a>
+    <a href="/metrics" class="{{ 'active' if page == 'metrics' else '' }}">指标字典</a>
+    <a href="/discount-rates" class="{{ 'active' if page == 'rates' else '' }}">折现率配置</a>
+  </nav>
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+<footer>
+  <span>价值投资工作台 P0</span>
+  <span>解析、抽取、写作与测算在助手侧完成；本工作台承载结果、版本与人工确认</span>
+</footer>
+</body>
+</html>

@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}待确认 · {{ company.name }}{% endblock %}
+{% block content %}
+<div class="crumbs"><a href="/">企业</a> / <a href="/companies/{{ company.id }}">{{ company.name }}</a> / 待确认</div>
+<div class="page-head">
+  <div>
+    <h1>待确认清单</h1>
+    <p class="muted">只有"已确认"的指标值会进入数据快照，并被报告与估值引用。争议项不参与快照。</p>
+  </div>
+  <div class="actions">
+    <a class="btn {{ 'primary' if not only_required else '' }}" href="/companies/{{ company.id }}/pending">全部</a>
+    <a class="btn {{ 'primary' if only_required else '' }}" href="?only_required=true">仅估值必需</a>
+    <a class="btn" href="/companies/{{ company.id }}/data">数据矩阵</a>
+  </div>
+</div>
+
+{% if items %}
+<div class="card">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>报告期</th><th>指标</th><th class="num">数值</th><th>状态</th><th>置信度</th><th>来源定位</th><th>操作</th></tr>
+      </thead>
+      <tbody>
+        {% for item in items %}
+        <tr>
+          <td class="nowrap">{{ item.period }}</td>
+          <td>{{ item.metric }}{% if item.required %}<span class="badge gray">必需</span>{% endif %}</td>
+          <td class="num">{{ item.value|cell(item.unit_type) }}</td>
+          <td><span class="dot {{ item.status }}"></span>{{ status_labels.get(item.status, item.status) }}</td>
+          <td>{{ item.confidence }}</td>
+          <td class="small muted">{{ item.source or '手工录入' }}{% if item.page %} · 第 {{ item.page }} 页{% endif %}
+            {% if item.row_label %}<br>{{ item.row_label }}{% endif %}
+            {% if item.column_label %}<br>列：{{ item.column_label }}{% endif %}
+          </td>
+          <td>
+            <div class="actions">
+              {% if item.status != 'disputed' %}
+              <form method="post" action="/values/{{ item.id }}/confirm">
+                <input type="hidden" name="next" value="/companies/{{ company.id }}/pending">
+                <button class="btn sm primary" type="submit">确认</button>
+              </form>
+              {% endif %}
+              <details class="cell">
+                <summary class="btn sm">改值</summary>
+                <div class="pop inline">
+                  <form method="post" action="/values/{{ item.id }}/override">
+                    <input type="hidden" name="next" value="/companies/{{ company.id }}/pending">
+                    <label>新值</label>
+                    <input type="number" step="any" name="value" value="{{ item.value }}" required>
+                    <label>原因（必填）</label>
+                    <input type="text" name="reason" required>
+                    <button class="btn sm primary" type="submit" style="margin-top: 6px;">提交</button>
+                  </form>
+                </div>
+              </details>
+              <form method="post" action="/values/{{ item.id }}/dispute">
+                <input type="hidden" name="next" value="/companies/{{ company.id }}/pending">
+                <input type="hidden" name="reason" value="用户标记争议">
+                <button class="btn sm danger" type="submit">争议</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% else %}
+<div class="card empty">
+  <h2>没有待确认项</h2>
+  <p>下一步：在助手侧生成数据快照，或直接生成新一版报告。</p>
+  <pre><code>python -m app.cli snapshot --company {{ company.id }} --reason first_build
+python -m app.cli report --company {{ company.id }}</code></pre>
+</div>
+{% endif %}
+{% endblock %}

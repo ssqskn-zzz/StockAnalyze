@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}{{ company.name }} · 价值投资工作台{% endblock %}
+{% block content %}
+{% set latest = annual[-1] if annual else None %}
+<div class="crumbs"><a href="/">企业</a> / {{ company.name }}</div>
+<div class="page-head">
+  <div>
+    <h1>{{ company.name }}
+      <span class="muted" style="font-size: 13px; font-weight: 400;">{{ company.market }} · {{ company.code or '无代码' }}</span>
+    </h1>
+    <p class="muted">{{ company.industry or '行业未标注' }} · {{ company.currency }} · {{ company.accounting_standard }}
+      {% if company.is_financial %}<span class="badge gray">金融（FCF 估值禁用）</span>{% endif %}
+      {% if company.is_cyclical %}<span class="badge gray">周期股</span>{% endif %}
+    </p>
+    <div>{% for badge in badges %}<span class="badge {{ badge.kind }}">{{ badge.text }}</span>{% endfor %}</div>
+  </div>
+  <div class="actions">
+    <a class="btn" href="/companies/{{ company.id }}/data">数据矩阵</a>
+    <a class="btn" href="/companies/{{ company.id }}/pending">待确认（{{ stats.pending }}）</a>
+    <a class="btn" href="/companies/{{ company.id }}/reports">深度报告</a>
+    <a class="btn" href="/companies/{{ company.id }}/valuation">DCF 估值</a>
+    <a class="btn" href="/companies/{{ company.id }}/lineage">版本与来源</a>
+  </div>
+</div>
+
+{% if latest %}
+<div class="grid cols-5" style="margin-bottom: 18px;">
+  <div class="kpi">
+    <div class="label">营业收入 · {{ latest.period.label }}</div>
+    <div class="value">{{ latest['values'].get('revenue')|yi }}</div>
+    <div class="hint">亿元</div>
+  </div>
+  <div class="kpi">
+    <div class="label">扣非净利润</div>
+    <div class="value">{{ latest['values'].get('net_profit_deducted')|yi }}</div>
+    <div class="hint">亿元</div>
+  </div>
+  <div class="kpi">
+    <div class="label">扣非 ROE</div>
+    <div class="value">{{ latest.derived.get('roe_deducted')|pct }}</div>
+    <div class="hint">扣非净利润 ÷ 所有者权益</div>
+  </div>
+  <div class="kpi">
+    <div class="label">毛利率</div>
+    <div class="value">{{ latest.derived.get('gross_margin')|pct }}</div>
+    <div class="hint">(收入 − 成本) ÷ 收入</div>
+  </div>
+  <div class="kpi">
+    <div class="label">经营净现金流</div>
+    <div class="value">{{ latest['values'].get('ocf')|yi }}</div>
+    <div class="hint">亿元</div>
+  </div>
+</div>
+{% endif %}
+
+<div class="grid cols-2">
+  <div class="card">
+    <div class="card-head"><h2>状态</h2>
+      <span class="small muted">快照 {{ snapshot.code if snapshot else '—' }}</span>
+    </div>
+    <table>
+      <tr><th>覆盖报告期</th><td>{{ stats.period_count }} 个（年报 {{ stats.annual_count }}，最新 {{ stats.latest_period }}）</td></tr>
+      <tr><th>待确认指标值</th><td>{{ stats.pending }} 项</td></tr>
+      <tr><th>估值必需数据完整度</th><td>{{ '%.0f%%'|format(stats.completeness.ratio * 100) }}（{{ stats.completeness.ok }}/{{ stats.completeness.total }}）</td></tr>
+      <tr><th>最近数据快照</th><td>{% if snapshot %}{{ snapshot.code }} · {{ snapshot.created_at }}{% else %}—{% endif %}</td></tr>
+      <tr><th>最近报告</th><td>{% if report %}<a href="/companies/{{ company.id }}/reports?version={{ report.version_no }}">v{{ report.version_no }}</a> · {{ report.status }}{% else %}—{% endif %}</td></tr>
+      <tr><th>最近估值</th><td>{% if valuation %}<a href="/companies/{{ company.id }}/valuation?version_id={{ valuation.id }}">V{{ valuation.version_no }} · {{ valuation.scheme }}</a> · {{ valuation.status }}{% else %}—{% endif %}</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>报告期</h2><span class="small muted">按时间升序</span></div>
+    <div class="tag-list">
+      {% for p in periods %}
+      <span class="chip">{{ p.fiscal_year }}{% if p.period_type == 'annual' %}年报{% elif p.period_type == 'h1' %}半年报{% elif p.period_type == 'q1' %}一季报{% else %}三季报{% endif %}</span>
+      {% else %}
+      <span class="muted small">尚无报告期</span>
+      {% endfor %}
+    </div>
+    {% if annual %}
+    <h3>年度指标趋势</h3>
+    <div class="table-wrap flush">
+      <table>
+        <thead><tr><th>指标</th>{% for item in annual %}<th class="num">{{ item.period.label }}</th>{% endfor %}</tr></thead>
+        <tbody>
+          <tr><td>营业收入（亿元）</td>{% for item in annual %}<td class="num">{{ item['values'].get('revenue')|yi }}</td>{% endfor %}</tr>
+          <tr><td>扣非净利润（亿元）</td>{% for item in annual %}<td class="num">{{ item['values'].get('net_profit_deducted')|yi }}</td>{% endfor %}</tr>
+          <tr><td>经营净现金流（亿元）</td>{% for item in annual %}<td class="num">{{ item['values'].get('ocf')|yi }}</td>{% endfor %}</tr>
+          <tr><td>扣非 ROE</td>{% for item in annual %}<td class="num">{{ item.derived.get('roe_deducted')|pct }}</td>{% endfor %}</tr>
+          <tr><td>毛利率</td>{% for item in annual %}<td class="num">{{ item.derived.get('gross_margin')|pct }}</td>{% endfor %}</tr>
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>最近操作与复核</h2><a class="small" href="/companies/{{ company.id }}/lineage">查看完整时间轴</a></div>
+  {% if recent_reviews %}
+  <table>
+    <thead><tr><th>时间</th><th>对象</th><th>动作</th><th>说明</th></tr></thead>
+    <tbody>
+      {% for r in recent_reviews %}
+      <tr><td class="nowrap">{{ r.created_at }}</td><td>{{ r.object_type }} #{{ r.object_id }}</td><td>{{ r.action }}</td><td class="muted">{{ r.reason or '—' }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted small">暂无记录。</p>
+  {% endif %}
+</div>
+{% endblock %}

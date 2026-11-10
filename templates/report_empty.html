@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}报告 · {{ company.name }}{% endblock %}
+{% block content %}
+<div class="crumbs"><a href="/">企业</a> / <a href="/companies/{{ company.id }}">{{ company.name }}</a> / 深度报告</div>
+<div class="card empty">
+  <h2>{{ message or '还没有报告版本' }}</h2>
+  <p>报告由助手侧基于已确认数据快照生成，生成后在此复核与发布。</p>
+  <pre><code>python -m app.cli snapshot --company {{ company.id }} --reason first_build
+python -m app.cli report --company {{ company.id }}</code></pre>
+</div>
+{% endblock %}

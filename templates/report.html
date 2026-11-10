@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% from "_blocks.html" import render_blocks with context %}
+{% block title %}深度报告 · {{ company.name }}{% endblock %}
+{% block content %}
+<div class="crumbs"><a href="/">企业</a> / <a href="/companies/{{ company.id }}">{{ company.name }}</a> / 深度报告</div>
+<div class="page-head">
+  <div>
+    <h1>{{ company.name }} 深度分析报告
+      <span class="muted" style="font-size: 13px; font-weight: 400;">v{{ version.version_no }}</span>
+    </h1>
+    <p class="muted">
+      状态 {{ version.status }} ｜ 基于快照 #{{ version.based_on_snapshot_id }} ｜ 生成于 {{ version.generated_at }}
+      {% if version.published_at %}｜发布 {{ version.published_at }}{% endif %}
+    </p>
+    <div class="actions">
+      {% for v in versions %}
+      <a class="chip {{ 'on' if v.version_no == version.version_no else '' }}" href="?version={{ v.version_no }}">v{{ v.version_no }} · {{ v.status }}</a>
+      {% endfor %}
+      <a class="btn sm" href="/companies/{{ company.id }}/reports/compare">版本对比</a>
+    </div>
+  </div>
+</div>
+
+<div class="grid cols-2">
+  <div class="card">
+    <div class="card-head"><h2>变更摘要</h2><span class="badge gray">只增不改</span></div>
+    <p class="small" style="white-space: pre-wrap;">{{ version.change_summary or '首版生成' }}</p>
+    {% if changes %}
+    <table>
+      <thead><tr><th>部分</th><th>变更类型</th></tr></thead>
+      <tbody>
+        {% for c in changes %}
+        <tr><td>{{ c.part_code }}</td><td><span class="badge-change {{ c.change_type }}">{{ c.change_type }}</span></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>发布与定性复核</h2></div>
+    {% if pending_review %}
+    <div class="callout warn small">
+      以下定性章节尚未完成逐条复核，本版不可发布：{% for s in pending_review %}「{{ s.title }}」{% endfor %}
+    </div>
+    {% else %}
+    <div class="callout good small">Part 6 / Part 7 已完成逐条复核。</div>
+    {% endif %}
+    <div class="small muted" style="margin: 8px 0;">估值数据完整度：{{ '%.0f%%'|format(completeness.ratio * 100) }}（{{ completeness.ok }}/{{ completeness.total }}）</div>
+    {% if version.status in ['draft', 'pending_review'] %}
+    <form method="post" action="/reports/{{ version.id }}/publish">
+      <input type="hidden" name="next" value="/companies/{{ company.id }}/reports?version={{ version.version_no }}">
+      <label class="small muted">完整度不足 80% 时需填写强制发布原因</label>
+      <input type="text" name="force_reason" placeholder="可选">
+      <button class="btn primary" type="submit" style="margin-top: 8px;" {{ 'disabled' if pending_review else '' }}>发布本版本</button>
+    </form>
+    {% else %}
+    <p class="small muted">本版本状态为 {{ version.status }}，不再接受修改；如需更新请生成新版本。</p>
+    {% endif %}
+  </div>
+</div>
+
+{% for section in sections %}
+<div class="card">
+  <div class="section-head">
+    <div>
+      <div class="section-title">{{ section.title }}</div>
+      <div class="small muted">
+        变更类型：<span class="badge-change {{ section.change_type }}">{{ section.change_type }}</span>
+        {% if section.carry_over_from %}｜沿用自 v{{ section.carry_over_from }}{% endif %}
+        ｜引用指标值 {{ section.cited_count }} 项
+      </div>
+    </div>
+    {% if section.part_code in ['part6', 'part7'] %}
+    <div class="actions">
+      <span class="badge {{ 'warn' if section.review_status == 'pending' else 'good' }}">
+        {{ {'pending': '待复核', 'still_valid': '仍成立', 'needs_rewrite': '需改写', 'invalid': '已失效', 'not_required': '无需复核'}.get(section.review_status, section.review_status) }}
+      </span>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="report-body">
+    {{ render_blocks(section.blocks) }}
+  </div>
+
+  {% if section.part_code in ['part6', 'part7'] and version.status in ['draft', 'pending_review'] %}
+  <div style="border-top: 1px solid var(--line); margin-top: 10px; padding-top: 10px;">
+    <form class="form-row" method="post" action="/reports/{{ version.id }}/sections/{{ section.id }}/review">
+      <input type="hidden" name="next" value="/companies/{{ company.id }}/reports?version={{ version.version_no }}">
+      <div style="flex: 2; min-width: 240px;">
+        <label>复核说明（可选）</label>
+        <input type="text" name="reason" value="{{ section.review_reason or '' }}" placeholder="如：结论仍成立，数据已更新">
+      </div>
+      <div>
+        <button class="btn sm primary" name="decision" value="still_valid" type="submit">仍成立</button>
+      </div>
+      <div>
+        <button class="btn sm" name="decision" value="needs_rewrite" type="submit">需改写</button>
+      </div>
+      <div>
+        <button class="btn sm danger" name="decision" value="invalid" type="submit">已失效</button>
+      </div>
+    </form>
+  </div>
+  {% endif %}
+</div>
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}处理记录 · 价值投资工作台{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>处理记录</h1>
+    <p class="muted">工作台不提供上传/抓取/生成按钮；以下记录由助手侧写入，失败与警告均保留原文。</p>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>导入模板说明</h2><span class="badge gray">Excel / CSV</span></div>
+  <div class="grid cols-2">
+    <div>
+      <h4>工作表「基本信息」</h4>
+      <p class="small muted">键值对：公司名称、证券代码、市场、行业、币种、会计准则、是否金融、是否周期、金额单位（元/千元/万元/百万元/亿元）。金额单位缺省为元。</p>
+      <h4>工作表「主要指标」「成本结构」「资产负债」等</h4>
+      <p class="small muted">第 1 列为指标名（需命中指标字典别名），其余列为期间列，列头形如 <code>2022年报</code>、<code>2023半年报</code>、<code>2024Q1</code>、<code>2024</code>。</p>
+    </div>
+    <div>
+      <h4>工作表「分部数据」</h4>
+      <p class="small muted">列顺序：维度类型（产品/区域）｜维度名称｜指标（营业收入/营业成本/毛利率）｜期间列。</p>
+      <h4>工作表「销量」</h4>
+      <p class="small muted">列：产品｜指标（销量）｜期间列，单位按行业原样保存。</p>
+      <h4>PDF</h4>
+      <p class="small muted">按文本层行抽取，列位需人工核对，一律低置信度；扫描件无文本层，不抽取。</p>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>抽取批次</h2><span class="small muted">最近 50 条</span></div>
+  {% if batches %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>批次</th><th>企业</th><th>触发</th><th>状态</th><th>开始</th><th>结束</th><th>结果摘要</th></tr></thead>
+      <tbody>
+        {% for item in batches %}
+        <tr>
+          <td>B{{ item.batch.id }}</td>
+          <td>{% if item.company %}<a href="/companies/{{ item.company.id }}">{{ item.company.name }}</a>{% else %}—{% endif %}</td>
+          <td>{{ item.batch.trigger_type }}</td>
+          <td>{{ '已取消' if item.batch.status == 'cancelled' else item.batch.status }}</td>
+          <td class="nowrap">{{ item.batch.started_at }}</td>
+          <td class="nowrap">{{ item.batch.finished_at or '—' }}</td>
+          <td class="small">{{ item.batch.result_summary or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted small">还没有抽取批次。</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>来源文件</h2><span class="small muted">按内容哈希去重</span></div>
+  {% if files %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>企业</th><th>文件</th><th>渠道</th><th>类型</th><th>状态</th><th>SHA256</th><th>来源</th><th>时间</th></tr></thead>
+      <tbody>
+        {% for f in files %}
+        <tr>
+          <td>{{ f.company_name }}</td>
+          <td>{{ f.filename }}</td>
+          <td>{{ f.channel or 'upload' }}</td>
+          <td>{{ f.content_type or '—' }}</td>
+          <td>{{ f.status }}</td>
+          <td class="mono small">{{ f.sha256[:12] }}…</td>
+          <td class="small">{% if f.source_url %}<a href="{{ f.source_url }}" target="_blank" rel="noreferrer">链接</a>{% else %}本地投递{% endif %}</td>
+          <td class="nowrap">{{ f.created_at }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted small">还没有来源文件。</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>抓取日志</h2><span class="small muted">限速与重试均记录</span></div>
+  {% if fetch_logs %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>时间</th><th>渠道</th><th>URL</th><th class="num">状态码</th><th class="num">重试</th><th class="num">耗时 ms</th><th>备注</th></tr></thead>
+      <tbody>
+        {% for log in fetch_logs %}
+        <tr>
+          <td class="nowrap">{{ log.requested_at }}</td>
+          <td>{{ log.channel }}</td>
+          <td class="small" style="max-width: 380px; word-break: break-all;">{{ log.url }}</td>
+          <td class="num">{{ log.status_code or '—' }}</td>
+          <td class="num">{{ log.retry_count }}</td>
+          <td class="num">{{ log.elapsed_ms or '—' }}</td>
+          <td class="small muted">{{ log.note or '' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted small">还没有自动获取记录。A 股走巨潮、美股走 SEC；港股默认关闭。</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>投递示例</h2></div>
+  <pre><code>python -m app.cli company-add --name 示例公司 --market A --code 600000 --industry 医疗器械
+python -m app.cli ingest --company 1 --file 2024年报.xlsx --confirm-high --snapshot
+python -m app.cli fetch --company 1 --years 5 --ingest          # A 股：巨潮
+python -m app.cli value --company 1 --market-cap 120000000000 --shares 9000000000</code></pre>
+</div>
+{% endblock %}

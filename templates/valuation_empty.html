@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}DCF 估值 · {{ company.name }}{% endblock %}
+{% block content %}
+<div class="crumbs"><a href="/">企业</a> / <a href="/companies/{{ company.id }}">{{ company.name }}</a> / DCF 估值</div>
+<div class="card empty">
+  {% if financial %}
+  <h2>该企业不适用自由现金流估值</h2>
+  <p>银行 / 保险 / 证券 / 信托类企业的经营现金流不反映股东可分配现金，口径 A 已禁用。可保留数据与报告，估值模块不出数。</p>
+  {% else %}
+  <h2>还没有估值版本</h2>
+  <p>估值基于已确认数据快照计算。当前估值必需指标完整度：{{ '%.0f%%'|format(completeness.ratio * 100) }}（{{ completeness.ok }}/{{ completeness.total }}）。</p>
+  <pre><code>python -m app.cli value --company {{ company.id }} --base avg5 --market-cap 100000000000 --shares 1000000000</code></pre>
+  {% endif %}
+</div>
+{% endblock %}

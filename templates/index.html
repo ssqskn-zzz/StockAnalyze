@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}企业 · 价值投资工作台{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>企业</h1>
+    <p class="muted">每家企业的关键经营数据、深度分析报告与 DCF 估值，均以确认后的指标值和数据快照为底座。</p>
+  </div>
+  <div class="actions">
+    <a class="btn" href="/processing">查看处理记录</a>
+    <a class="btn" href="/metrics">指标字典</a>
+  </div>
+</div>
+
+<div class="grid cols-5" style="margin-bottom: 20px;">
+  <div class="kpi"><div class="label">企业</div><div class="value">{{ totals.companies }}</div></div>
+  <div class="kpi"><div class="label">报告期</div><div class="value">{{ totals.periods }}</div></div>
+  <div class="kpi"><div class="label">待确认指标值</div><div class="value">{{ totals.pending }}</div></div>
+  <div class="kpi"><div class="label">报告版本</div><div class="value">{{ totals.reports }}</div></div>
+  <div class="kpi"><div class="label">估值版本</div><div class="value">{{ totals.valuations }}</div></div>
+</div>
+
+{% if cards %}
+<div class="company-grid">
+  {% for card in cards %}
+  <a class="card company-card" href="/companies/{{ card.company.id }}">
+    <div class="title">
+      <span class="name">{{ card.company.name }}</span>
+      <span class="small muted">{{ card.company.market }} · {{ card.company.code or '无代码' }}</span>
+    </div>
+    <div class="meta">
+      {{ card.company.industry or '行业未标注' }} · {{ card.company.currency }}
+      {% if card.company.is_financial %}<span class="badge gray">金融</span>{% endif %}
+      {% if card.company.is_cyclical %}<span class="badge gray">周期</span>{% endif %}
+    </div>
+    <div>
+      {% for badge in card.badges %}<span class="badge {{ badge.kind }}">{{ badge.text }}</span>{% endfor %}
+      {% if not card.badges %}<span class="badge good">无待办</span>{% endif %}
+    </div>
+    <div style="margin-top: 10px;">
+      <div class="row"><span class="muted">覆盖报告期</span><span>{{ card.stats.period_count }} 个（年报 {{ card.stats.annual_count }}）</span></div>
+      <div class="row"><span class="muted">最新期间</span><span>{{ card.stats.latest_period }}</span></div>
+      <div class="row"><span class="muted">最近快照</span><span>{{ card.snapshot.code if card.snapshot else '—' }}</span></div>
+      <div class="row"><span class="muted">最新报告</span><span>{% if card.report %}v{{ card.report.version_no }} · {{ card.report.status }}{% else %}—{% endif %}</span></div>
+      <div class="row"><span class="muted">最新估值</span><span>{% if card.valuation %}V{{ card.valuation.version_no }} · {{ card.valuation.status }}{% else %}—{% endif %}</span></div>
+      <div class="row"><span class="muted">估值数据完整度</span><span>{{ '%.0f%%'|format(card.stats.completeness.ratio * 100) }}</span></div>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card empty">
+  <h2>还没有企业</h2>
+  <p>工作台不提供上传/生成按钮。请在助手侧用命令行投递材料：</p>
+  <pre><code>python -m app.cli company-add --name 示例公司 --market A --code 600000 --industry 医疗器械
+python -m app.cli ingest --company 1 --file 年报.xlsx --confirm-high --snapshot</code></pre>
+</div>
+{% endif %}
+{% endblock %}

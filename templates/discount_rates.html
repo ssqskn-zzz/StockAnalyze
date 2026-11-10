@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}折现率配置 · 价值投资工作台{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>折现率配置</h1>
+    <p class="muted">折现率是配置项，不是全局写死的常数。优先级：本版手填 &gt; 企业覆盖 &gt; 行业档位 &gt; 全局默认。</p>
+  </div>
+</div>
+
+<div class="card">
+  <div class="callout small">
+    当前全局默认：<strong>{{ '%.2f%%'|format(default_rate * 100) }}</strong>；
+    允许区间 {{ '%.0f%%'|format(r_min * 100) }}–{{ '%.0f%%'|format(r_max * 100) }}。
+    每次新增都会生成新配置版本；企业覆盖或行业档位变更后，该企业已确认估值会转"待复核"，不自动改数。
+  </div>
+  <form class="form-row" method="post" action="/discount-rates">
+    <div>
+      <label>作用层级</label>
+      <select name="scope">
+        <option value="global">全局默认</option>
+        <option value="industry">行业档位</option>
+        <option value="company">企业覆盖</option>
+      </select>
+    </div>
+    <div>
+      <label>折现率（小数，如 0.10）</label>
+      <input type="number" step="0.001" name="rate" value="0.10" required>
+    </div>
+    <div>
+      <label>行业标签（行业档位必填）</label>
+      <input type="text" name="industry_tag" placeholder="如 医疗器械">
+    </div>
+    <div>
+      <label>企业（企业覆盖必选）</label>
+      <select name="company_id">
+        <option value="">—</option>
+        {% for c in companies %}<option value="{{ c.id }}">{{ c.name }}（{{ c.market }}）</option>{% endfor %}
+      </select>
+    </div>
+    <div style="flex: 2; min-width: 220px;">
+      <label>变更原因</label>
+      <input type="text" name="reason" placeholder="如：无风险利率下行，统一调整">
+    </div>
+    <div><button class="btn primary" type="submit">新增配置</button></div>
+  </form>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>配置历史</h2><span class="small muted">只增不改</span></div>
+  {% if configs %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置版本</th><th>层级</th><th>行业标签</th><th>企业</th><th class="num">r</th><th>生效时间</th><th>变更人</th><th>原因</th></tr></thead>
+      <tbody>
+        {% for c in configs %}
+        <tr>
+          <td>#{{ c.config_version }}</td>
+          <td>{{ {'global': '全局默认', 'industry': '行业档位', 'company': '企业覆盖', 'override': '本版手填'}.get(c.scope_level, c.scope_level) }}</td>
+          <td>{{ c.industry_tag or '—' }}</td>
+          <td>{{ c.company_name or '—' }}</td>
+          <td class="num">{{ '%.2f%%'|format(c.rate * 100) }}</td>
+          <td class="nowrap">{{ c.effective_from }}</td>
+          <td>{{ c.changed_by }}</td>
+          <td class="small muted">{{ c.reason or '' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted small">尚无配置记录。</p>
+  {% endif %}
+</div>
+{% endblock %}
