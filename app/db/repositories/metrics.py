@@ -108,36 +108,43 @@ def upsert_value(
       skipped    数值相同，无变化
       conflict   旧值已确认/锁定/人工录入且数值不同 → 不覆盖，交由 U3/改值流程处理
     """
-    existing = current_value(conn, company_id, period_id, metric_id, dimension_type, dimension_name)
-    ts = now_iso()
-    if existing:
-        if _same(existing["value"], value):
-            return int(existing["id"]), "skipped"
-        protected = existing["status"] in _STATUS_CONFIRMED or bool(existing["is_manual"])
-        if protected:
-            return int(existing["id"]), "conflict"
-        conn.execute("UPDATE metric_values SET is_current=0 WHERE id=?", (existing["id"],))
-        version_no = int(existing["version_no"]) + 1
-        action = "superseded"
-    else:
-        version_no = 1
-        action = "inserted"
+    for attempt in range(2):
+        existing = current_value(conn, company_id, period_id, metric_id, dimension_type, dimension_name)
+        ts = now_iso()
+        if existing:
+            if _same(existing["value"], value):
+                return int(existing["id"]), "skipped"
+            protected = existing["status"] in _STATUS_CONFIRMED or bool(existing["is_manual"])
+            if protected:
+                return int(existing["id"]), "conflict"
+            conn.execute("UPDATE metric_values SET is_current=0 WHERE id=?", (existing["id"],))
+            version_no = int(existing["version_no"]) + 1
+            action = "superseded"
+        else:
+            version_no = 1
+            action = "inserted"
 
-    cur = conn.execute(
-        """INSERT INTO metric_values
-           (company_id, period_id, metric_id, dimension_type, dimension_name, value, unit,
-            raw_value, raw_unit, raw_currency, status, version_no, is_current, is_derived,
-            derived_from, caliber_note, confidence, is_manual, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (
-            company_id, period_id, metric_id, dimension_type, dimension_name, value, unit,
-            raw_value if raw_value is not None else value, raw_unit or unit, raw_currency,
-            status, version_no, 1, int(is_derived),
-            json_dumps(derived_from) if derived_from else None, caliber_note, confidence,
-            int(is_manual), ts,
-        ),
-    )
-    return int(cur.lastrowid), action
+        try:
+            cur = conn.execute(
+                """INSERT INTO metric_values
+                   (company_id, period_id, metric_id, dimension_type, dimension_name, value, unit,
+                    raw_value, raw_unit, raw_currency, status, version_no, is_current, is_derived,
+                    derived_from, caliber_note, confidence, is_manual, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    company_id, period_id, metric_id, dimension_type, dimension_name, value, unit,
+                    raw_value if raw_value is not None else value, raw_unit or unit, raw_currency,
+                    status, version_no, 1, int(is_derived),
+                    json_dumps(derived_from) if derived_from else None, caliber_note, confidence,
+                    int(is_manual), ts,
+                ),
+            )
+            return int(cur.lastrowid), action
+        except sqlite3.IntegrityError:
+            # 并行写入同一 (期间, 指标) 时，另一线程已插入当前值；重试一次走替换/跳过分支
+            if attempt:
+                raise
+    raise RuntimeError("unreachable")
 
 
 def add_extraction(

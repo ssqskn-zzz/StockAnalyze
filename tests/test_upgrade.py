@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,7 @@ import pytest
 from app import config
 from app.db.repositories import companies as company_repo
 from app.pipeline import downloader, public_data
-from app.services import ingestion_service, metric_service, report_files, report_service
+from app.services import acquire_service, ingestion_service, metric_service, report_files, report_service
 from app.utils import local_ipv4_addresses
 from tests.conftest import build_workbook
 
@@ -103,6 +104,30 @@ def test_markdown_file_name_contains_company_period_snapshot_version():
     )
     assert path.name == "2021年报-2026三季报_S3_v4.md"
     assert path.parent.name == "600276_恒瑞医药"
+
+
+def test_acquire_runs_public_and_filing_in_parallel(db, monkeypatch):
+    company_id = company_repo.create_company(db, name="并行公司", market="A", code="600030")
+    db.commit()
+
+    def slow_public(conn, company, *, years=5):
+        time.sleep(0.8)
+        return {"channel": "test", "source": "test", "items": 0, "periods": [],
+                "inserted": 0, "updated": 0, "skipped": 0, "conflicts": 0}
+
+    def slow_filing(conn, company, **kwargs):
+        time.sleep(0.8)
+        return []
+
+    monkeypatch.setattr(acquire_service.public_data, "fetch_public_metrics", slow_public)
+    monkeypatch.setattr(acquire_service.downloader, "fetch_for_company", slow_filing)
+
+    started = time.perf_counter()
+    result = acquire_service.acquire_company(company_id, ingest=False, period_types=["annual"])
+    elapsed = time.perf_counter() - started
+
+    assert result["public"]["ok"] and result["filing"]["ok"]
+    assert elapsed < 1.4, f"两路应并行执行，实际耗时 {elapsed:.2f}s"
 
 
 def test_local_addresses_helper_returns_list():

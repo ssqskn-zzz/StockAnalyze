@@ -110,7 +110,7 @@ def get_or_create_period(
     if row:
         return int(row["id"]), False
     cur = conn.execute(
-        """INSERT INTO periods
+        """INSERT OR IGNORE INTO periods
            (company_id, period_type, fiscal_year, period_seq, start_date, end_date,
             audited, is_corrected, authority_rank, status, created_at)
            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
@@ -122,6 +122,15 @@ def get_or_create_period(
             int(is_corrected), authority_rank, "valid", now_iso(),
         ),
     )
+    if cur.rowcount == 0:
+        # 并行获取时另一路线程可能已插入同一期间，回查即可
+        row = conn.execute(
+            """SELECT id FROM periods
+               WHERE company_id=? AND period_type=? AND fiscal_year=? AND period_seq=?""",
+            (company_id, period_type, fiscal_year, period_seq),
+        ).fetchone()
+        if row:
+            return int(row["id"]), False
     return int(cur.lastrowid), True
 
 
