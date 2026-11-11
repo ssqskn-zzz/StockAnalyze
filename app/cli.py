@@ -26,8 +26,14 @@ from app.db.repositories import metrics as metric_repo
 from app.db.repositories import reports as report_repo
 from app.db.repositories import valuations as valuation_repo
 from app.domain.metrics_catalog import METRICS
-from app.pipeline import downloader
-from app.services import ingestion_service, metric_service, report_service, valuation_service
+from app.services import (
+    acquire_service,
+    ingestion_service,
+    metric_service,
+    report_service,
+    valuation_service,
+)
+from app.utils import local_ipv4_addresses
 
 
 def _fmt_yi(value: float | None) -> str:
@@ -110,31 +116,54 @@ def cmd_ingest(args) -> None:
 
 
 def cmd_fetch(args) -> None:
+    """并行执行：公开数据接口抓取 + 年报/季报公告下载（互不等待）。"""
     with connection.session() as conn:
         company = _get_company(conn, args.company)
-        try:
-            fetched = downloader.fetch_for_company(
-                conn, company, years=args.years, allow_hk=args.allow_hk,
-                period_types=[t.strip() for t in args.types.split(",") if t.strip()],
-                limit=args.limit,
-            )
-        except downloader.FetchError as exc:
-            print(f"自动获取失败：{exc}")
+        print(f"开始并行获取「{company['name']}」：公开数据 + 公告下载")
+
+    result = acquire_service.acquire_company(
+        args.company,
+        years=args.years,
+        period_types=[t.strip() for t in args.types.split(",") if t.strip()],
+        limit=args.limit,
+        allow_hk=args.allow_hk,
+        ingest=args.ingest,
+        include_public=not args.no_public,
+    )
+    public = result["public"]
+    filing = result["filing"]
+
+    if public.get("ok"):
+        print(
+            f"[公开数据] {public['source']}：写入 {public['items']} 项，"
+            f"新增 {public['inserted']}、更新 {public['updated']}、"
+            f"冲突 {public['conflicts']}、无变化 {public['skipped']}；"
+            f"覆盖 {', '.join(public['periods'][:8])}{'…' if len(public['periods']) > 8 else ''}"
+        )
+    else:
+        print(f"[公开数据] 未获取：{public.get('error')}")
+
+    if not filing.get("ok"):
+        print(f"[公告下载] 失败：{filing.get('error')}")
+        if not public.get("ok"):
             print("可改用手工投递：python -m app.cli ingest --company ID --file <文件>")
             sys.exit(1)
-        paths = [item["path"] for item in fetched if item.get("path")]
-        meta = {item["filename"]: item for item in fetched if item.get("path")}
-        print(f"已获取 {len(paths)} 份文件：")
-        for item in fetched:
-            if item.get("path"):
+    else:
+        files = filing.get("files") or []
+        new_files = filing.get("new_files") or []
+        duplicates = filing.get("duplicates") or []
+        print(f"[公告下载] 命中 {len(files)} 份，新增 {len(new_files)} 份，内容去重跳过 {len(duplicates)} 份：")
+        for item in files:
+            if item.get("path") and not item.get("duplicate"):
                 print(f"  - {item['filename']}（{item['channel']}，{item.get('disclosure_date') or ''}）")
+            elif item.get("duplicate"):
+                reason = {"period": "同报告期已保留", "already_ingested": "已入库",
+                          "content": "内容哈希相同"}.get(item.get("reason"), "内容重复")
+                print(f"  = {reason}，跳过：{item['filename']}")
             else:
                 print(f"  ! 下载失败：{item.get('url')} {item.get('error')}")
-        if args.ingest and paths:
-            report = ingestion_service.ingest_files(
-                conn, args.company, paths, trigger="auto", channel="auto", file_meta=meta,
-                note=f"自动获取（{company['market']}）",
-            )
+        report = filing.get("ingest")
+        if report:
             print(f"入库批次 B{report['batch_id']}：{report['summary']}")
             for warning in report["warnings"]:
                 print(f"  ! {warning}")
@@ -281,7 +310,32 @@ def cmd_rate_add(args) -> None:
 def cmd_serve(args) -> None:
     import uvicorn
 
-    uvicorn.run("app.web.app:app", host=args.host, port=args.port, reload=False)
+    host = args.host or config.SERVE_HOST
+    port = args.port or config.SERVE_PORT
+    print("价值投资工作台启动中…")
+    print(f"  本机访问：http://127.0.0.1:{port}")
+    if host in ("0.0.0.0", "::"):
+        addresses = local_ipv4_addresses()
+        if addresses:
+            for address in addresses:
+                print(f"  局域网访问：http://{address}:{port}")
+        else:
+            print("  局域网访问：未检测到可用局域网地址（请检查网络连接）")
+    else:
+        print(f"  监听地址：{host}:{port}")
+    print("  按 Ctrl+C 或直接关闭窗口即可停止服务。")
+    uvicorn.run("app.web.app:app", host=host, port=port, reload=False)
+
+
+def cmd_report_export(args) -> None:
+    with connection.session() as conn:
+        exported = report_service.export_legacy_reports(conn)
+    if not exported:
+        print("没有需要导出的旧版报告正文")
+        return
+    print(f"已把 {len(exported)} 个旧版报告正文导出为 Markdown（库内 body 已清空）：")
+    for item in exported:
+        print(f"  - v{item['version_id']} → {item['file_path']}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -322,6 +376,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=10, help="单次最多下载份数")
     p.add_argument("--allow-hk", action="store_true")
     p.add_argument("--ingest", action="store_true")
+    p.add_argument("--no-public", action="store_true", help="跳过公开数据接口，仅下载公告")
     p.set_defaults(func=cmd_fetch)
 
     p = sub.add_parser("pending", help="待确认清单")
@@ -397,9 +452,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reason")
     p.set_defaults(func=cmd_rate_add)
 
-    p = sub.add_parser("serve", help="启动工作台")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=8000)
+    p = sub.add_parser("report-export", help="把旧版库内报告正文导出为 Markdown 文件")
+    p.set_defaults(func=cmd_report_export)
+
+    p = sub.add_parser("serve", help="启动工作台（默认全网卡，局域网可访问）")
+    p.add_argument("--host", default=None, help=f"默认 {config.SERVE_HOST}")
+    p.add_argument("--port", type=int, default=config.SERVE_PORT)
     p.set_defaults(func=cmd_serve)
     return parser
 

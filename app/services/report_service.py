@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from app.db.repositories import audit
@@ -13,8 +12,8 @@ from app.db.repositories import snapshots as snapshot_repo
 from app.db.repositories import valuations as valuation_repo
 from app.domain import derived as dv
 from app.domain.periods import period_label
-from app.services import metric_service, report_writer
-from app.utils import json_dumps, json_loads
+from app.services import metric_service, report_files, report_writer
+from app.utils import json_loads, now_iso
 from app import config
 
 
@@ -74,27 +73,41 @@ def _peer_rows(conn, company) -> list[dict[str, Any]]:
     return out
 
 
-def _block_texts(blocks: list[dict[str, Any]]) -> list[str]:
-    texts = []
-    for block in blocks:
-        if block["type"] in ("paragraph", "note", "heading"):
-            texts.append(block.get("text", ""))
-        elif block["type"] == "bullets":
-            texts.extend(block.get("items", []))
-        elif block["type"] == "valuation_card":
-            texts.append(f"valuation:{block.get('version_id')}:{block.get('version_no')}")
-    return texts
-
-
-def _table_signature(blocks: list[dict[str, Any]]) -> str:
-    tables = [b for b in blocks if b["type"] == "table"]
-    return json.dumps(tables, ensure_ascii=False, sort_keys=True)
-
-
 def _resolve_citations(conn, snapshot, codes: list[str]) -> list[int]:
     rows = metric_repo.values_by_ids(conn, snapshot_repo.snapshot_value_ids(snapshot))
     code_set = set(codes)
     return sorted({int(r["id"]) for r in rows if r["metric_code"] in code_set})
+
+
+def section_markdowns(conn, version) -> dict[str, str]:
+    """读取某版本按 Part 切分的 Markdown。优先文件，旧版本回退到库内 blocks。"""
+    if not version:
+        return {}
+    path = version["file_path"] if "file_path" in version.keys() else None
+    if path:
+        sections = report_files.split_sections(report_files.read_markdown(path))
+        if sections:
+            return sections
+    out: dict[str, str] = {}
+    for section in report_repo.get_sections(conn, version["id"]):
+        blocks = json_loads(section["body"], []) or []
+        out[section["part_code"]] = report_files.blocks_to_markdown(blocks)
+    return out
+
+
+def _write_version_markdown(company, *, version_no: int, snapshot_code: str,
+                            coverage_labels: list[str], parts: list[dict[str, Any]],
+                            generated_at: str, status: str, change_summary: str) -> dict[str, Any]:
+    content = report_files.build_markdown(
+        company=company, version_no=version_no, snapshot_code=snapshot_code,
+        coverage=coverage_labels, parts=parts, generated_at=generated_at,
+        status=status, change_summary=change_summary,
+    )
+    path = report_files.report_file_path(
+        company, snapshot_code=snapshot_code, version_no=version_no, coverage=coverage_labels,
+    )
+    saved, sha = report_files.write_report(path, content)
+    return {"file_path": str(saved), "content_hash": sha}
 
 
 def generate_report(
@@ -135,7 +148,7 @@ def generate_report(
     report_id = report_repo.ensure_report(conn, company_id, f"{company['name']} 深度分析报告")
     version_no = report_repo.next_version_no(conn, report_id)
     previous = report_repo.latest_published(conn, company_id) or report_repo.latest_version(conn, company_id)
-    prev_sections = {s["part_code"]: s for s in report_repo.get_sections(conn, previous["id"])} if previous else {}
+    prev_md = section_markdowns(conn, previous) if previous else {}
 
     version_id = report_repo.create_version(
         conn,
@@ -153,19 +166,19 @@ def generate_report(
     ]
     changed, carried = [], []
     for part in parts:
-        prev = prev_sections.get(part["code"])
+        prev_text = prev_md.get(part["code"])
+        part_md = report_files.blocks_to_markdown(part["blocks"])
         change_type = "new"
         carry_from = None
-        if prev:
-            prev_blocks = json_loads(prev["body"], []) or []
-            same_text = _block_texts(prev_blocks) == _block_texts(part["blocks"])
-            same_table = _table_signature(prev_blocks) == _table_signature(part["blocks"])
+        if prev_text is not None:
+            same_text = prev_text.strip() == part_md.strip()
+            same_without_numbers = report_files.signature(prev_text) == report_files.signature(part_md)
             if part["code"] in ("part6", "part7"):
-                change_type = "data_refresh" if same_text and same_table else "conclusion_rewrite"
-            elif same_text and same_table:
+                change_type = "data_refresh" if same_without_numbers else "conclusion_rewrite"
+            elif same_text:
                 change_type = "carried"
                 carry_from = previous["version_no"]
-            elif same_text and not same_table:
+            elif same_without_numbers:
                 change_type = "data_refresh"
             else:
                 change_type = "conclusion_rewrite"
@@ -175,8 +188,8 @@ def generate_report(
                 part_code=part["code"],
                 change_type=change_type,
                 affected_periods=coverage_labels[-2:],
-                old_text=" / ".join(_block_texts(prev_blocks))[:400],
-                new_text=" / ".join(_block_texts(part["blocks"]))[:400],
+                old_text=prev_text[:400],
+                new_text=part_md[:400],
             )
         review_status = "pending" if part["code"] in ("part6", "part7") else "not_required"
         report_repo.add_section(
@@ -185,7 +198,7 @@ def generate_report(
             part_no=int(part["code"].replace("part", "")),
             part_code=part["code"],
             title=part["title"],
-            body=part["blocks"],
+            body=None,  # 正文写入 Markdown 文件，库内只留元数据
             change_type=change_type,
             carry_over_from=carry_from,
             cited_value_ids=_resolve_citations(conn, snapshot, part["cited"]),
@@ -212,6 +225,12 @@ def generate_report(
         "carried": carried,
         "previous_version": previous["version_no"] if previous else None,
     })
+    file_info = _write_version_markdown(
+        company, version_no=version_no, snapshot_code=snapshot["code"],
+        coverage_labels=coverage_labels, parts=parts, generated_at=now_iso(),
+        status="pending_review", change_summary="\n".join(summary_lines),
+    )
+    report_repo.set_version_file(conn, version_id, **file_info)
     audit.add(conn, object_type="report_version", object_id=version_id, action="generate",
               reason=f"基于快照 {snapshot['code']}", actor=actor)
     return {
@@ -220,6 +239,7 @@ def generate_report(
         "snapshot": snapshot["code"],
         "coverage": coverage_labels,
         "change_summary": "\n".join(summary_lines),
+        "file_path": file_info["file_path"],
         "qualitative_pending": 2,
     }
 
@@ -265,16 +285,22 @@ def compare_versions(conn, version_a: int, version_b: int) -> list[dict[str, Any
     b = report_repo.get_version(conn, version_b)
     if not a or not b:
         raise ValueError("版本不存在")
+    md_a = section_markdowns(conn, a)
+    md_b = section_markdowns(conn, b)
     sec_a = {s["part_code"]: s for s in report_repo.get_sections(conn, version_a)}
     sec_b = {s["part_code"]: s for s in report_repo.get_sections(conn, version_b)}
     rows = []
     for code in sorted(set(sec_a) | set(sec_b), key=lambda c: int(c.replace("part", ""))):
         sa, sb = sec_a.get(code), sec_b.get(code)
+        left = md_a.get(code, "")
+        right = md_b.get(code, "")
         rows.append({
             "part_code": code,
             "title": (sb or sa)["title"],
-            "left": json_loads(sa["body"], []) if sa else [],
-            "right": json_loads(sb["body"], []) if sb else [],
+            "left": left,
+            "right": right,
+            "left_html": report_files.render_markdown(left),
+            "right_html": report_files.render_markdown(right),
             "change_type": sb["change_type"] if sb else "deleted",
             "review_status": sb["review_status"] if sb else "—",
         })
@@ -285,13 +311,19 @@ def report_view(conn, version_id: int) -> dict[str, Any]:
     version = report_repo.get_version(conn, version_id)
     if not version:
         raise ValueError("报告版本不存在")
+    md_map = section_markdowns(conn, version)
     sections = []
     for section in report_repo.get_sections(conn, version_id):
+        markdown = md_map.get(section["part_code"], "")
+        legacy_blocks = json_loads(section["body"], []) or []
         sections.append({
             "id": section["id"],
             "part_code": section["part_code"],
             "title": section["title"],
-            "blocks": json_loads(section["body"], []),
+            "markdown": markdown,
+            "html": report_files.render_markdown(markdown),
+            # 兼容旧调用方：新版正文在文件里，这里给一个可读的占位 block
+            "blocks": legacy_blocks or ([{"type": "markdown", "text": markdown}] if markdown else []),
             "change_type": section["change_type"],
             "review_status": section["review_status"],
             "review_reason": section["review_reason"],
@@ -305,3 +337,45 @@ def report_view(conn, version_id: int) -> dict[str, Any]:
         "pending_review": [dict(r) for r in report_repo.pending_qualitative_sections(conn, version_id)],
         "versions": [dict(r) for r in report_repo.list_versions(conn, version["company_id"])],
     }
+
+
+def export_legacy_reports(conn, *, actor: str = "assistant") -> list[dict[str, Any]]:
+    """把旧版本库内正文一次性导出为 Markdown 文件，并清空库内 body（幂等）。"""
+    exported: list[dict[str, Any]] = []
+    versions = conn.execute(
+        "SELECT * FROM report_versions WHERE file_path IS NULL OR file_path='' ORDER BY id"
+    ).fetchall()
+    for version in versions:
+        sections = report_repo.get_sections(conn, version["id"])
+        if not sections or not any(section["body"] for section in sections):
+            continue
+        company = company_repo.get_company(conn, version["company_id"])
+        snapshot = snapshot_repo.get_snapshot(conn, version["based_on_snapshot_id"]) if version["based_on_snapshot_id"] else None
+        parts = [
+            {
+                "code": section["part_code"],
+                "title": section["title"],
+                "blocks": json_loads(section["body"], []) or [],
+            }
+            for section in sections
+        ]
+        coverage_labels = json_loads(version["coverage"], []) or []
+        coverage_labels = [
+            item if isinstance(item, str) else period_label(item.get("period_type"), item.get("fiscal_year"))
+            for item in coverage_labels
+        ]
+        info = _write_version_markdown(
+            company, version_no=version["version_no"],
+            snapshot_code=snapshot["code"] if snapshot else "S?",
+            coverage_labels=coverage_labels, parts=parts,
+            generated_at=version["generated_at"], status=version["status"],
+            change_summary=version["change_summary"] or "",
+        )
+        report_repo.set_version_file(conn, version["id"], **info)
+        conn.execute(
+            "UPDATE report_sections SET body=NULL WHERE version_id=?", (version["id"],)
+        )
+        audit.add(conn, object_type="report_version", object_id=version["id"], action="export_markdown",
+                  reason=info["file_path"], actor=actor)
+        exported.append({"version_id": version["id"], **info})
+    return exported

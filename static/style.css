@@ -210,6 +210,17 @@ input[type=file] { font-size: 12px; }
 .report-body th, .report-body td { padding: 5px 8px; font-size: 12.5px; }
 .report-body ul { margin: 6px 0 12px; padding-left: 20px; }
 .report-body li { margin-bottom: 5px; }
+.markdown-body h2, .markdown-body h3 {
+  font-size: 15px; color: #344054; margin: 18px 0 8px;
+}
+.markdown-body h4 { font-size: 13.5px; margin: 14px 0 6px; }
+.markdown-body blockquote {
+  margin: 8px 0 12px; padding: 8px 12px; border-left: 3px solid #cddff0;
+  background: #f8fbfd; color: #475467; border-radius: 0 6px 6px 0; font-size: 12.5px;
+}
+.markdown-body blockquote p { margin: 0 0 4px; }
+.markdown-body blockquote p:last-child { margin-bottom: 0; }
+.markdown-body .table-wrap table { min-width: 560px; }
 .note { font-size: 12px; color: var(--muted); background: #fafbfc; border: 1px dashed var(--line); padding: 8px 10px; border-radius: 6px; margin: 8px 0; }
 .table-note { font-size: 11px; color: var(--muted); margin: 4px 0 10px; }
 
@@ -228,4 +239,36 @@ pre code { background: none; padding: 0; color: inherit; font-size: 12px; }
   .compare-grid { grid-template-columns: 1fr; }
   main { padding: 18px 14px 50px; }
   .topbar { padding: 0 14px; }
+}
+
+/* 手机窄屏：导航可横向滑动，卡片单列，表格横向滚动 */
+@media (max-width: 680px) {
+  body { font-size: 14px; }
+  .topbar {
+    height: auto; padding: 10px 12px; flex-direction: column;
+    align-items: flex-start; gap: 8px;
+  }
+  .topbar nav {
+    width: 100%; overflow-x: auto; flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch; padding-bottom: 2px;
+  }
+  .topbar nav a { white-space: nowrap; padding: 5px 9px; }
+  main { padding: 14px 10px 40px; }
+  h1 { font-size: 19px; }
+  .page-head { flex-direction: column; gap: 10px; }
+  .grid.cols-2, .grid.cols-3, .grid.cols-4, .grid.cols-5 { grid-template-columns: 1fr; }
+  .company-grid { grid-template-columns: 1fr; }
+  .card { padding: 14px 12px; }
+  .section-head { flex-direction: column; }
+  .form-row > div { min-width: 100%; }
+  .table-wrap table, .markdown-body .table-wrap table { min-width: 520px; }
+  .pop { width: min(280px, calc(100vw - 32px)); }
+  .compare-col { padding: 10px; }
+  footer { flex-wrap: wrap; padding: 0 12px 26px; }
+}
+
+@media (max-width: 420px) {
+  .table-wrap table, .markdown-body .table-wrap table { min-width: 460px; }
+  th, td { padding: 6px; }
+  .report-body th, .report-body td { padding: 5px 6px; }
 }

@@ -11,7 +11,7 @@ P0 实现两个真实通道：
 
 from __future__ import annotations
 
-import json
+import hashlib
 import time
 from pathlib import Path
 from typing import Any
@@ -76,10 +76,24 @@ def _request(conn, session: requests.Session, *, channel: str, url: str, company
     raise FetchError(f"请求失败（{channel}）：{url}，{last_error}")
 
 
-def _save(path: Path, content: bytes) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(content)
-    return path
+def _store_content(conn, content: bytes, filename: str) -> tuple[Path, str, bool]:
+    """按内容 sha256 落盘去重，返回 (路径, sha256, 是否重复)。
+
+    存储位置与投递入库一致（data/files/<sha16>_<文件名>），因此同一份公告无论来自
+    自动下载还是用户投递，都只会保留一份；已有同哈希文件时直接复用，不重复写盘。
+    """
+    sha = hashlib.sha256(content).hexdigest()
+    existing = company_repo.find_source_file_by_hash(conn, sha)
+    if existing and Path(existing["stored_path"]).exists():
+        return Path(existing["stored_path"]), sha, True
+    config.FILES_DIR.mkdir(parents=True, exist_ok=True)
+    same_content = list(config.FILES_DIR.glob(f"{sha[:16]}_*"))
+    if same_content:
+        return same_content[0], sha, True
+    safe_name = "".join(ch for ch in filename if ch not in '\\/:*?"<>|')
+    target = config.FILES_DIR / f"{sha[:16]}_{safe_name}"
+    target.write_bytes(content)
+    return target, sha, False
 
 
 def fetch_sec(conn, company, *, years: int = 5, limit: int = 10) -> list[dict[str, Any]]:
@@ -126,7 +140,7 @@ def fetch_sec(conn, company, *, years: int = 5, limit: int = 10) -> list[dict[st
             picked.append({"error": str(exc), "url": url})
             continue
         filename = f"{ticker}_{form}_{filing_date}.pdf" if url.lower().endswith(".pdf") else f"{ticker}_{form}_{filing_date}{Path(doc).suffix}"
-        saved = _save(config.DATA_DIR / "downloads" / filename, file_resp.content)
+        saved, sha, duplicate = _store_content(conn, file_resp.content, filename)
         picked.append({
             "path": str(saved),
             "filename": filename,
@@ -134,6 +148,8 @@ def fetch_sec(conn, company, *, years: int = 5, limit: int = 10) -> list[dict[st
             "source_url": url,
             "announcement_no": accession,
             "disclosure_date": filing_date,
+            "sha256": sha,
+            "duplicate": duplicate,
         })
         if len(picked) >= min(limit, config.FETCH_MAX_FILES):
             break
@@ -178,6 +194,8 @@ def fetch_cninfo(
     period_types = period_types or ["annual"]
     picked: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
+    seen_periods: set[tuple[str, int]] = set()
+    saved_count = 0
 
     for period_type in period_types:
         if period_type not in CNINFO_CATEGORIES:
@@ -209,6 +227,13 @@ def fetch_cninfo(
             period = detect_period(title)
             if not period or period[0] != period_type or period[1] < end_year - years:
                 continue
+            if (period_type, period[1]) in seen_periods:
+                # 同一报告期只保留一份（如“全文”与“正文”不会重复下载）
+                picked.append({
+                    "filename": title, "duplicate": True, "reason": "period",
+                    "period_type": period_type, "fiscal_year": period[1], "channel": "cninfo",
+                })
+                continue
             adjunct = item.get("adjunctUrl")
             if not adjunct:
                 continue
@@ -216,13 +241,25 @@ def fetch_cninfo(
             if url in seen_urls:
                 continue
             seen_urls.add(url)
+            announcement_no = str(item.get("announcementId") or "")
+            if announcement_no and conn.execute(
+                "SELECT 1 FROM source_files WHERE announcement_no=? LIMIT 1", (announcement_no,)
+            ).fetchone():
+                seen_periods.add((period_type, period[1]))
+                picked.append({
+                    "filename": title, "duplicate": True, "reason": "already_ingested",
+                    "period_type": period_type, "fiscal_year": period[1], "channel": "cninfo",
+                    "announcement_no": announcement_no,
+                })
+                continue
             try:
                 file_resp = _request(conn, session, channel="cninfo", url=url, company_id=company["id"])
             except FetchError as exc:
                 picked.append({"error": str(exc), "url": url})
                 continue
             filename = f"{code}_{title.replace('/', '_')}.pdf"
-            saved = _save(config.DATA_DIR / "downloads" / filename, file_resp.content)
+            saved, sha, duplicate = _store_content(conn, file_resp.content, filename)
+            seen_periods.add((period_type, period[1]))
             picked.append({
                 "path": str(saved),
                 "filename": filename,
@@ -230,10 +267,13 @@ def fetch_cninfo(
                 "period_type": period_type,
                 "fiscal_year": period[1],
                 "source_url": url,
-                "announcement_no": str(item.get("announcementId") or ""),
+                "announcement_no": announcement_no,
                 "disclosure_date": str(item.get("announcementTime") or "")[:10],
+                "sha256": sha,
+                "duplicate": duplicate,
             })
-            if len(picked) >= min(limit, config.FETCH_MAX_FILES):
+            saved_count += 1
+            if saved_count >= min(limit, config.FETCH_MAX_FILES):
                 return picked
     if not picked:
         raise FetchError("巨潮未检索到匹配公告（可能代码/类型不匹配，或接口字段变化）")

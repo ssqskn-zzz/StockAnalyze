@@ -1,5 +1,4 @@
 {% extends "base.html" %}
-{% from "_blocks.html" import render_blocks with context %}
 {% block title %}版本对比 · {{ company.name }}{% endblock %}
 {% block content %}
 <div class="crumbs"><a href="/">企业</a> / <a href="/companies/{{ company.id }}">{{ company.name }}</a> / 报告版本对比</div>
@@ -30,11 +29,11 @@
   <div class="compare-grid">
     <div class="compare-col">
       <h4 class="muted">v{{ left.version_no }}</h4>
-      <div class="report-body">{{ render_blocks(row.left) }}</div>
+      <div class="report-body markdown-body">{{ row.left_html|safe }}</div>
     </div>
     <div class="compare-col">
       <h4>v{{ right.version_no }}</h4>
-      <div class="report-body">{{ render_blocks(row.right) }}</div>
+      <div class="report-body markdown-body">{{ row.right_html|safe }}</div>
     </div>
   </div>
 </div>

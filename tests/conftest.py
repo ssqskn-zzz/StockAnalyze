@@ -18,6 +18,7 @@ def db(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     monkeypatch.setattr(config, "FILES_DIR", tmp_path / "files")
+    monkeypatch.setattr(config, "REPORTS_DIR", tmp_path / "reports")
     connection.init_db()
     with connection.session() as conn:
         metric_repo.seed_metrics(conn)

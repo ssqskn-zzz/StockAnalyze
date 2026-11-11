@@ -363,6 +363,7 @@ def build_content(
             "version_id": valuation["id"],
             "version_no": valuation["version_no"],
             "scheme": valuation["scheme"],
+            "company_id": company["id"],
             "equity_value": valuation["equity_value"],
             "per_share_value": valuation["per_share_value"],
             "status": valuation["status"],

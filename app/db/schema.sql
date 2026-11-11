@@ -170,6 +170,8 @@ CREATE TABLE IF NOT EXISTS report_versions (
                         CHECK (status IN ('draft', 'pending_review', 'published', 'archived')),
     change_summary      TEXT,                        -- 文本
     change_meta         TEXT,                        -- JSON
+    file_path           TEXT,                        -- 正文 Markdown 文件（data/reports 下，正文以此为准）
+    content_hash        TEXT,                        -- 正文文件 sha256，用于校验未被覆盖
     forced_publish_note TEXT,
     generated_at        TEXT    NOT NULL,
     published_at        TEXT,
@@ -183,7 +185,7 @@ CREATE TABLE IF NOT EXISTS report_sections (
     part_no          INTEGER NOT NULL,
     part_code        TEXT    NOT NULL,
     title            TEXT    NOT NULL,
-    body             TEXT    NOT NULL,               -- JSON blocks
+    body             TEXT,                           -- 旧版兼容：JSON blocks；新版为 NULL，正文以 file_path 指向的 Markdown 为准
     change_type      TEXT    NOT NULL DEFAULT 'new'
                      CHECK (change_type IN ('new', 'carried', 'data_refresh', 'conclusion_rewrite', 'deleted')),
     carry_over_from  INTEGER,                        -- 来源版本号

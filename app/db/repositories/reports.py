@@ -54,23 +54,34 @@ def add_section(
     part_no: int,
     part_code: str,
     title: str,
-    body: list[dict[str, Any]],
+    body: list[dict[str, Any]] | None,
     change_type: str,
     carry_over_from: int | None,
     cited_value_ids: Iterable[int],
     review_status: str = "not_required",
 ) -> int:
+    """写入章节元数据。新版正文在 Markdown 文件中，body 传 None。"""
     cur = conn.execute(
         """INSERT INTO report_sections
            (version_id, part_no, part_code, title, body, change_type, carry_over_from,
             cited_value_ids, review_status)
            VALUES (?,?,?,?,?,?,?,?,?)""",
         (
-            version_id, part_no, part_code, title, json_dumps(body), change_type,
-            carry_over_from, json_dumps(list(cited_value_ids)), review_status,
+            version_id, part_no, part_code, title,
+            json_dumps(body) if body is not None else None,
+            change_type, carry_over_from, json_dumps(list(cited_value_ids)), review_status,
         ),
     )
     return int(cur.lastrowid)
+
+
+def set_version_file(
+    conn: sqlite3.Connection, version_id: int, *, file_path: str, content_hash: str
+) -> None:
+    conn.execute(
+        "UPDATE report_versions SET file_path=?, content_hash=? WHERE id=?",
+        (file_path, content_hash, version_id),
+    )
 
 
 def add_section_change(

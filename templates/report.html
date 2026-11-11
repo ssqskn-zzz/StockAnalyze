@@ -1,5 +1,4 @@
 {% extends "base.html" %}
-{% from "_blocks.html" import render_blocks with context %}
 {% block title %}深度报告 · {{ company.name }}{% endblock %}
 {% block content %}
 <div class="crumbs"><a href="/">企业</a> / <a href="/companies/{{ company.id }}">{{ company.name }}</a> / 深度报告</div>
@@ -80,8 +79,8 @@
     {% endif %}
   </div>
 
-  <div class="report-body">
-    {{ render_blocks(section.blocks) }}
+  <div class="report-body markdown-body">
+    {{ section.html|safe }}
   </div>
 
   {% if section.part_code in ['part6', 'part7'] and version.status in ['draft', 'pending_review'] %}

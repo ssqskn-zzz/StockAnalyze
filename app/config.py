@@ -8,7 +8,12 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.environ.get("STOCKANALYZE_DATA_DIR", BASE_DIR / "data"))
 FILES_DIR = DATA_DIR / "files"
+REPORTS_DIR = DATA_DIR / "reports"
 DB_PATH = Path(os.environ.get("STOCKANALYZE_DB", DATA_DIR / "workbench.db"))
+
+# 工作台监听：默认绑定全网卡，便于同局域网设备访问（PRD 2.5）
+SERVE_HOST = os.environ.get("STOCKANALYZE_HOST", "0.0.0.0")
+SERVE_PORT = int(os.environ.get("STOCKANALYZE_PORT", "8000"))
 
 EXTRACTOR_VERSION = "p0-1.0.0"
 
