@@ -237,23 +237,7 @@ def cmd_report(args) -> None:
             sys.exit(1)
     print(f"已生成报告 v{result['version_no']}（id={result['version_id']}），基于快照 {result['snapshot']}")
     print(result["change_summary"])
-    print("下一步：在网页逐条复核 Part 6/7 后发布。")
-
-
-def cmd_review(args) -> None:
-    with connection.session() as conn:
-        report_service.review_qualitative(conn, args.version_id, args.section_id, args.decision, args.reason or "")
-    print(f"已记录复核结论：section #{args.section_id} → {args.decision}")
-
-
-def cmd_publish(args) -> None:
-    with connection.session() as conn:
-        try:
-            report_service.publish(conn, args.version_id, force_reason=args.force_reason or "")
-        except report_service.ReportPublishError as exc:
-            print(f"无法发布：{exc}")
-            sys.exit(1)
-    print(f"报告版本 #{args.version_id} 已发布")
+    print("报告生成即发布；历史版本只读保留，可在网页按报告期查看。")
 
 
 def cmd_value(args) -> None:
@@ -408,21 +392,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--note")
     p.set_defaults(func=cmd_snapshot)
 
-    p = sub.add_parser("report", help="生成深度分析报告")
+    p = sub.add_parser("report", help="生成深度分析报告（生成即发布）")
     p.add_argument("--company", type=int, required=True)
     p.set_defaults(func=cmd_report)
-
-    p = sub.add_parser("review", help="记录定性章节复核结论")
-    p.add_argument("--version-id", type=int, required=True)
-    p.add_argument("--section-id", type=int, required=True)
-    p.add_argument("--decision", required=True, choices=["still_valid", "needs_rewrite", "invalid"])
-    p.add_argument("--reason")
-    p.set_defaults(func=cmd_review)
-
-    p = sub.add_parser("publish", help="发布报告版本")
-    p.add_argument("--version-id", type=int, required=True)
-    p.add_argument("--force-reason")
-    p.set_defaults(func=cmd_publish)
 
     p = sub.add_parser("value", help="运行 DCF 估值")
     p.add_argument("--company", type=int, required=True)

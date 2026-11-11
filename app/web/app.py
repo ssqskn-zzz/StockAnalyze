@@ -123,6 +123,16 @@ def company_pending(request: Request, company_id: int, only_required: bool = Fal
     })
 
 
+@app.post("/companies/{company_id}/pending/confirm")
+def confirm_pending(
+    request: Request, company_id: int,
+    value_ids: list[int] = Form(default=[]), next: str = Form("/"),
+):
+    with connection.session() as conn:
+        metric_service.confirm_many(conn, value_ids)
+    return RedirectResponse(next, status_code=303)
+
+
 @app.post("/values/{value_id}/confirm")
 def confirm_value(request: Request, value_id: int, next: str = Form("/")):
     with connection.session() as conn:
@@ -158,13 +168,14 @@ def dispute_value(request: Request, value_id: int, reason: str = Form(""), next:
 def report_latest(request: Request, company_id: int, version: int | None = None):
     with connection.session() as conn:
         company = query_service.company_overview(conn, company_id)["company"]
-        versions = report_repo.list_versions(conn, company_id)
+        versions = [v for v in report_repo.list_versions(conn, company_id) if v["status"] not in ("pending_review", "draft")]
+        row = None
         if version:
-            row = report_repo.get_version_by_no(conn, company_id, version)
+            candidate = report_repo.get_version_by_no(conn, company_id, version)
+            if candidate and candidate["status"] not in ("pending_review", "draft"):
+                row = candidate
         elif versions:
             row = versions[0]
-        else:
-            row = None
         if not row:
             return _render(request, "report_empty.html", {"page": "reports", "company": company})
         data = report_service.report_view(conn, row["id"])
@@ -172,51 +183,6 @@ def report_latest(request: Request, company_id: int, version: int | None = None)
     return _render(request, "report.html", {
         "page": "reports", "company": company, "completeness": completeness, **data,
     })
-
-
-@app.get("/companies/{company_id}/reports/compare")
-def report_compare(request: Request, company_id: int, left: int | None = None, right: int | None = None):
-    with connection.session() as conn:
-        company = query_service.company_overview(conn, company_id)["company"]
-        versions = report_repo.list_versions(conn, company_id)
-        if len(versions) < 2:
-            return _render(request, "report_empty.html", {
-                "page": "reports", "company": company,
-                "message": "至少需要两个报告版本才能对比",
-            })
-        left_version = report_repo.get_version(conn, left) if left else versions[1]
-        right_version = report_repo.get_version(conn, right) if right else versions[0]
-        rows = report_service.compare_versions(conn, left_version["id"], right_version["id"])
-    return _render(request, "compare.html", {
-        "page": "reports", "company": company, "rows": rows,
-        "left": dict(left_version), "right": dict(right_version),
-        "versions": [dict(v) for v in versions],
-    })
-
-
-@app.post("/reports/{version_id}/sections/{section_id}/review")
-def review_section(
-    request: Request, version_id: int, section_id: int,
-    decision: str = Form(...), reason: str = Form(""), next: str = Form("/"),
-):
-    with connection.session() as conn:
-        try:
-            report_service.review_qualitative(conn, version_id, section_id, decision, reason)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return RedirectResponse(next, status_code=303)
-
-
-@app.post("/reports/{version_id}/publish")
-def publish_report(
-    request: Request, version_id: int, force_reason: str = Form(""), next: str = Form("/"),
-):
-    with connection.session() as conn:
-        try:
-            report_service.publish(conn, version_id, force_reason=force_reason)
-        except report_service.ReportPublishError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return RedirectResponse(next, status_code=303)
 
 
 @app.get("/companies/{company_id}/valuation")

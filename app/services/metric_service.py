@@ -19,6 +19,18 @@ def confirm_value(conn, value_id: int, actor: str = "user") -> None:
     audit.add(conn, object_type="metric_value", object_id=value_id, action="confirm", actor=actor)
 
 
+def confirm_many(conn, value_ids: list[int], actor: str = "user") -> tuple[int, list[str]]:
+    """批量确认待确认指标；跳过不可确认项并返回失败原因。"""
+    confirmed, failed = 0, []
+    for value_id in value_ids:
+        try:
+            confirm_value(conn, int(value_id), actor)
+            confirmed += 1
+        except ValueError as exc:
+            failed.append(f"{value_id}: {exc}")
+    return confirmed, failed
+
+
 def confirm_high_confidence(conn, company_id: int, actor: str = "user") -> int:
     rows = conn.execute(
         """SELECT id FROM metric_values

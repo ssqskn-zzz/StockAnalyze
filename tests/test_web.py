@@ -58,7 +58,7 @@ def test_company_pages_render(client, db, tmp_path):
     assert "100.00" in matrix.text
 
 
-def test_report_review_and_publish_via_web(client, db, tmp_path):
+def test_report_generated_as_published_via_web(client, db, tmp_path):
     company_id = _seed_company(db, tmp_path)
     result = report_service.generate_report(db, company_id)
     db.commit()
@@ -66,25 +66,47 @@ def test_report_review_and_publish_via_web(client, db, tmp_path):
     page = client.get(f"/companies/{company_id}/reports")
     assert page.status_code == 200
     assert "Part 1" in page.text or "企业印象" in page.text
+    # 版本标识带报告期；不再出现版本对比与待审阅
+    assert "2021年报-2024年报" in page.text
+    assert "版本对比" not in page.text
+    assert "待审阅" not in page.text
+    assert "pending_review" not in page.text
 
-    view = report_service.report_view(db, result["version_id"])
-    for section in view["sections"]:
-        if section["part_code"] in ("part6", "part7"):
-            response = client.post(
-                f"/reports/{result['version_id']}/sections/{section['id']}/review",
-                data={"decision": "still_valid", "reason": "页面复核", "next": "/"},
-                follow_redirects=False,
-            )
-            assert response.status_code == 303
-
-    publish = client.post(
-        f"/reports/{result['version_id']}/publish",
-        data={"force_reason": "", "next": "/"},
-        follow_redirects=False,
-    )
-    assert publish.status_code == 303
+    # 版本对比路由已移除
+    assert client.get(f"/companies/{company_id}/reports/compare").status_code == 404
     db.commit()
     assert report_service.report_view(db, result["version_id"])["version"]["status"] == "published"
+
+
+def test_pending_bulk_confirm_via_web(client, db, tmp_path):
+    company_id = company_repo.create_company(
+        db, name="批量公司", market="A", code="600010", industry="医疗器械"
+    )
+    path = build_workbook(tmp_path / "bulk.xlsx", [2021, 2022, 2023, 2024],
+                          name="批量公司", code="600010")
+    assert ingestion_service.ingest_files(db, company_id, [path])["status"] == "completed"
+    db.commit()
+
+    items = metric_service.pending_items(db, company_id)
+    assert len(items) >= 2
+    picked = [item for item in items if item["status"] != "disputed"][:2]
+    assert len(picked) == 2
+
+    response = client.post(
+        f"/companies/{company_id}/pending/confirm",
+        data={"value_ids": [str(item["id"]) for item in picked], "next": "/"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    statuses = {
+        row["id"]: row["status"]
+        for row in db.execute(
+            "SELECT id, status FROM metric_values WHERE id IN (?, ?)",
+            (picked[0]["id"], picked[1]["id"]),
+        ).fetchall()
+    }
+    assert all(status == "confirmed" for status in statuses.values())
 
 
 def test_valuation_page_and_confirm_via_web(client, db, tmp_path):

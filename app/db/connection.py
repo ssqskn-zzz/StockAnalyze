@@ -44,6 +44,11 @@ def _migrate_reports(conn: sqlite3.Connection) -> None:
     if "content_hash" not in version_cols:
         conn.execute("ALTER TABLE report_versions ADD COLUMN content_hash TEXT")
 
+    # 报告改为「生成即发布」后，历史遗留的待审阅/草稿版本统一归档，避免出现 pending_review。
+    conn.execute(
+        "UPDATE report_versions SET status='archived' WHERE status IN ('pending_review', 'draft')"
+    )
+
     body_col = next(
         (row for row in conn.execute("PRAGMA table_info(report_sections)") if row["name"] == "body"),
         None,

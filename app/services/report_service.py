@@ -1,4 +1,4 @@
-"""报告生成、版本演进、对比、定性复核与发布。"""
+"""报告生成与版本演进：生成即发布，历史版本只读保留。"""
 
 from __future__ import annotations
 
@@ -14,11 +14,6 @@ from app.domain import derived as dv
 from app.domain.periods import period_label
 from app.services import metric_service, report_files, report_writer
 from app.utils import json_loads, now_iso
-from app import config
-
-
-class ReportPublishError(ValueError):
-    pass
 
 
 def _snapshot_series(conn, company_id: int, snapshot, period_type: str) -> list[dict[str, Any]]:
@@ -157,7 +152,7 @@ def generate_report(
         version_no=version_no,
         snapshot_id=snapshot["id"],
         coverage=coverage,
-        status="pending_review",
+        status="published",
     )
 
     summary_lines = [
@@ -191,7 +186,7 @@ def generate_report(
                 old_text=prev_text[:400],
                 new_text=part_md[:400],
             )
-        review_status = "pending" if part["code"] in ("part6", "part7") else "not_required"
+        review_status = "not_required"
         report_repo.add_section(
             conn,
             version_id=version_id,
@@ -216,7 +211,7 @@ def generate_report(
     summary_lines.append(
         "变更：" + ("、".join(changed) if changed else "无结构变化")
         + "；沿用：" + ("、".join(carried) if carried else "无")
-        + "。定性章节（Part 6/7）需逐条复核后方可发布。"
+        + "。报告生成即发布，定性章节随版本归档。"
     )
     report_repo.set_changes(conn, version_id, "\n".join(summary_lines), {
         "snapshot": snapshot["code"],
@@ -228,9 +223,14 @@ def generate_report(
     file_info = _write_version_markdown(
         company, version_no=version_no, snapshot_code=snapshot["code"],
         coverage_labels=coverage_labels, parts=parts, generated_at=now_iso(),
-        status="pending_review", change_summary="\n".join(summary_lines),
+        status="published", change_summary="\n".join(summary_lines),
     )
     report_repo.set_version_file(conn, version_id, **file_info)
+    # 报告生成即发布：不再产生 pending_review 版本
+    report_repo.set_status(conn, version_id, "published", published_by=actor, forced_note=None)
+    report_repo.archive_older_published(conn, company_id, version_id)
+    for section in report_repo.get_sections(conn, version_id):
+        metric_repo.lock_values(conn, json_loads(section["cited_value_ids"], []) or [])
     audit.add(conn, object_type="report_version", object_id=version_id, action="generate",
               reason=f"基于快照 {snapshot['code']}", actor=actor)
     return {
@@ -240,71 +240,22 @@ def generate_report(
         "coverage": coverage_labels,
         "change_summary": "\n".join(summary_lines),
         "file_path": file_info["file_path"],
-        "qualitative_pending": 2,
+        "qualitative_pending": 0,
     }
 
 
-def review_qualitative(conn, version_id: int, section_id: int, decision: str, reason: str = "") -> None:
-    section = report_repo.get_section(conn, section_id)
-    if not section or section["version_id"] != version_id:
-        raise ValueError("章节不属于该报告版本")
-    report_repo.set_section_review(conn, section_id, decision, reason)
-    audit.add(conn, object_type="report_section", object_id=section_id, action=f"review:{decision}",
-              reason=reason)
-
-
-def publish(conn, version_id: int, *, actor: str = "user", force_reason: str = "") -> None:
-    version = report_repo.get_version(conn, version_id)
-    if not version:
-        raise ValueError("报告版本不存在")
-    if version["status"] not in ("pending_review", "draft"):
-        raise ReportPublishError("只有待审阅版本可以发布")
-    pending = report_repo.pending_qualitative_sections(conn, version_id)
-    if pending:
-        names = "、".join(s["title"] for s in pending)
-        raise ReportPublishError(f"定性章节未完成逐条复核：{names}")
-    comp = metric_service.completeness(conn, version["company_id"])
-    forced_note = None
-    if comp["ratio"] < config.COMPLETENESS_THRESHOLD:
-        if not force_reason:
-            raise ReportPublishError(
-                f"估值必需指标完整度 {comp['ratio']:.0%} 低于 {config.COMPLETENESS_THRESHOLD:.0%}，"
-                "如确需发布请填写强制发布原因"
-            )
-        forced_note = force_reason
-    report_repo.set_status(conn, version_id, "published", published_by=actor, forced_note=forced_note)
-    report_repo.archive_older_published(conn, version["company_id"], version_id)
-    for section in report_repo.get_sections(conn, version_id):
-        metric_repo.lock_values(conn, json_loads(section["cited_value_ids"], []) or [])
-    audit.add(conn, object_type="report_version", object_id=version_id, action="publish",
-              reason=forced_note or "")
-
-
-def compare_versions(conn, version_a: int, version_b: int) -> list[dict[str, Any]]:
-    a = report_repo.get_version(conn, version_a)
-    b = report_repo.get_version(conn, version_b)
-    if not a or not b:
-        raise ValueError("版本不存在")
-    md_a = section_markdowns(conn, a)
-    md_b = section_markdowns(conn, b)
-    sec_a = {s["part_code"]: s for s in report_repo.get_sections(conn, version_a)}
-    sec_b = {s["part_code"]: s for s in report_repo.get_sections(conn, version_b)}
-    rows = []
-    for code in sorted(set(sec_a) | set(sec_b), key=lambda c: int(c.replace("part", ""))):
-        sa, sb = sec_a.get(code), sec_b.get(code)
-        left = md_a.get(code, "")
-        right = md_b.get(code, "")
-        rows.append({
-            "part_code": code,
-            "title": (sb or sa)["title"],
-            "left": left,
-            "right": right,
-            "left_html": report_files.render_markdown(left),
-            "right_html": report_files.render_markdown(right),
-            "change_type": sb["change_type"] if sb else "deleted",
-            "review_status": sb["review_status"] if sb else "—",
-        })
-    return rows
+def coverage_label(coverage_json: str | None) -> str:
+    """把版本覆盖期渲染成「2021年报-2026三季报」，用于版本标识。"""
+    items = json_loads(coverage_json, []) or []
+    labels: list[str] = []
+    for item in items:
+        if isinstance(item, str):
+            labels.append(item)
+        elif isinstance(item, dict):
+            labels.append(period_label(item.get("period_type"), item.get("fiscal_year")))
+    if not labels:
+        return "未标注报告期"
+    return labels[0] if len(labels) == 1 else f"{labels[0]}-{labels[-1]}"
 
 
 def report_view(conn, version_id: int) -> dict[str, Any]:
@@ -330,12 +281,18 @@ def report_view(conn, version_id: int) -> dict[str, Any]:
             "carry_over_from": section["carry_over_from"],
             "cited_count": len(json_loads(section["cited_value_ids"], []) or []),
         })
+    version_row = dict(version)
+    version_row["coverage_label"] = coverage_label(version["coverage"])
+    versions = []
+    for row in report_repo.list_versions(conn, version["company_id"]):
+        item = dict(row)
+        item["coverage_label"] = coverage_label(row["coverage"])
+        versions.append(item)
     return {
-        "version": dict(version),
+        "version": version_row,
         "sections": sections,
         "changes": [dict(r) for r in report_repo.list_section_changes(conn, version_id)],
-        "pending_review": [dict(r) for r in report_repo.pending_qualitative_sections(conn, version_id)],
-        "versions": [dict(r) for r in report_repo.list_versions(conn, version["company_id"])],
+        "versions": versions,
     }
 
 

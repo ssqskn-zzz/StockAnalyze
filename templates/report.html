@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}深度报告 · {{ company.name }}{% endblock %}
 {% block content %}
+{% set status_text = {'published': '已发布', 'archived': '历史版本', 'draft': '草稿', 'pending_review': '待审阅'} %}
 <div class="crumbs"><a href="/">企业</a> / <a href="/companies/{{ company.id }}">{{ company.name }}</a> / 深度报告</div>
 <div class="page-head">
   <div>
@@ -8,14 +9,15 @@
       <span class="muted" style="font-size: 13px; font-weight: 400;">v{{ version.version_no }}</span>
     </h1>
     <p class="muted">
-      状态 {{ version.status }} ｜ 基于快照 #{{ version.based_on_snapshot_id }} ｜ 生成于 {{ version.generated_at }}
-      {% if version.published_at %}｜发布 {{ version.published_at }}{% endif %}
+      报告期 {{ version.coverage_label }} ｜ 基于快照 #{{ version.based_on_snapshot_id }} ｜ 生成于 {{ version.generated_at }}
     </p>
     <div class="actions">
       {% for v in versions %}
-      <a class="chip {{ 'on' if v.version_no == version.version_no else '' }}" href="?version={{ v.version_no }}">v{{ v.version_no }} · {{ v.status }}</a>
+      <a class="chip {{ 'on' if v.version_no == version.version_no else '' }}" href="?version={{ v.version_no }}"
+         title="{{ v.coverage_label }} · {{ status_text.get(v.status, v.status) }}">
+        v{{ v.version_no }} · {{ v.coverage_label }}
+      </a>
       {% endfor %}
-      <a class="btn sm" href="/companies/{{ company.id }}/reports/compare">版本对比</a>
     </div>
   </div>
 </div>
@@ -37,25 +39,17 @@
   </div>
 
   <div class="card">
-    <div class="card-head"><h2>发布与定性复核</h2></div>
-    {% if pending_review %}
-    <div class="callout warn small">
-      以下定性章节尚未完成逐条复核，本版不可发布：{% for s in pending_review %}「{{ s.title }}」{% endfor %}
-    </div>
-    {% else %}
-    <div class="callout good small">Part 6 / Part 7 已完成逐条复核。</div>
-    {% endif %}
-    <div class="small muted" style="margin: 8px 0;">估值数据完整度：{{ '%.0f%%'|format(completeness.ratio * 100) }}（{{ completeness.ok }}/{{ completeness.total }}）</div>
-    {% if version.status in ['draft', 'pending_review'] %}
-    <form method="post" action="/reports/{{ version.id }}/publish">
-      <input type="hidden" name="next" value="/companies/{{ company.id }}/reports?version={{ version.version_no }}">
-      <label class="small muted">完整度不足 80% 时需填写强制发布原因</label>
-      <input type="text" name="force_reason" placeholder="可选">
-      <button class="btn primary" type="submit" style="margin-top: 8px;" {{ 'disabled' if pending_review else '' }}>发布本版本</button>
-    </form>
-    {% else %}
-    <p class="small muted">本版本状态为 {{ version.status }}，不再接受修改；如需更新请生成新版本。</p>
-    {% endif %}
+    <div class="card-head"><h2>版本信息</h2><span class="badge {{ 'good' if version.status == 'published' else 'gray' }}">{{ status_text.get(version.status, version.status) }}</span></div>
+    <table>
+      <tbody>
+        <tr><th>覆盖报告期</th><td>{{ version.coverage_label }}</td></tr>
+        <tr><th>数据快照</th><td>#{{ version.based_on_snapshot_id }}</td></tr>
+        <tr><th>生成时间</th><td>{{ version.generated_at }}</td></tr>
+        {% if version.published_at %}<tr><th>发布时间</th><td>{{ version.published_at }}</td></tr>{% endif %}
+        <tr><th>估值数据完整度</th><td>{{ '%.0f%%'|format(completeness.ratio * 100) }}（{{ completeness.ok }}/{{ completeness.total }}）</td></tr>
+        {% if version.file_path %}<tr><th>正文文件</th><td class="small muted">{{ version.file_path }}</td></tr>{% endif %}
+      </tbody>
+    </table>
   </div>
 </div>
 
@@ -70,39 +64,11 @@
         ｜引用指标值 {{ section.cited_count }} 项
       </div>
     </div>
-    {% if section.part_code in ['part6', 'part7'] %}
-    <div class="actions">
-      <span class="badge {{ 'warn' if section.review_status == 'pending' else 'good' }}">
-        {{ {'pending': '待复核', 'still_valid': '仍成立', 'needs_rewrite': '需改写', 'invalid': '已失效', 'not_required': '无需复核'}.get(section.review_status, section.review_status) }}
-      </span>
-    </div>
-    {% endif %}
   </div>
 
   <div class="report-body markdown-body">
     {{ section.html|safe }}
   </div>
-
-  {% if section.part_code in ['part6', 'part7'] and version.status in ['draft', 'pending_review'] %}
-  <div style="border-top: 1px solid var(--line); margin-top: 10px; padding-top: 10px;">
-    <form class="form-row" method="post" action="/reports/{{ version.id }}/sections/{{ section.id }}/review">
-      <input type="hidden" name="next" value="/companies/{{ company.id }}/reports?version={{ version.version_no }}">
-      <div style="flex: 2; min-width: 240px;">
-        <label>复核说明（可选）</label>
-        <input type="text" name="reason" value="{{ section.review_reason or '' }}" placeholder="如：结论仍成立，数据已更新">
-      </div>
-      <div>
-        <button class="btn sm primary" name="decision" value="still_valid" type="submit">仍成立</button>
-      </div>
-      <div>
-        <button class="btn sm" name="decision" value="needs_rewrite" type="submit">需改写</button>
-      </div>
-      <div>
-        <button class="btn sm danger" name="decision" value="invalid" type="submit">已失效</button>
-      </div>
-    </form>
-  </div>
-  {% endif %}
 </div>
 {% endfor %}
 {% endblock %}

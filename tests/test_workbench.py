@@ -35,14 +35,6 @@ def _ingest_and_confirm(db, company_id, path, reason="first_build"):
     return report, snapshot_id
 
 
-def _publish_all(db, version_id):
-    view = report_service.report_view(db, version_id)
-    for section in view["sections"]:
-        if section["part_code"] in ("part6", "part7"):
-            report_service.review_qualitative(db, version_id, section["id"], "still_valid", "测试复核")
-    report_service.publish(db, version_id)
-
-
 def test_first_company_closed_loop(db, tmp_path):
     company_id = _create_company(db)
     path = build_workbook(tmp_path / "2021-2024.xlsx", [2021, 2022, 2023, 2024])
@@ -64,15 +56,13 @@ def test_first_company_closed_loop(db, tmp_path):
     assert {s["part_code"] for s in view["sections"]} == {f"part{i}" for i in range(1, 8)}
     assert view["sections"][1]["blocks"], "Part 2 必须有实际内容块"
     qualitative = [s for s in view["sections"] if s["part_code"] in ("part6", "part7")]
-    assert all(s["review_status"] == "pending" for s in qualitative)
+    assert all(s["review_status"] == "not_required" for s in qualitative)
 
-    # 未复核不可发布
-    with pytest.raises(report_service.ReportPublishError):
-        report_service.publish(db, result["version_id"])
-
-    _publish_all(db, result["version_id"])
+    # 生成即发布：版本直接可用，且不再有 pending_review
     published = report_repo.get_version(db, result["version_id"])
     assert published["status"] == "published"
+    # 版本标识带报告期
+    assert view["version"]["coverage_label"] == "2021年报-2024年报"
     # 引用的指标值已锁定
     locked = db.execute(
         "SELECT COUNT(*) AS n FROM metric_values WHERE company_id=? AND status='locked'", (company_id,)
@@ -85,7 +75,6 @@ def test_incremental_new_period_keeps_old_versions(db, tmp_path):
     first = build_workbook(tmp_path / "v1.xlsx", [2021, 2022, 2023, 2024])
     _, snap1 = _ingest_and_confirm(db, company_id, first)
     v1 = report_service.generate_report(db, company_id)
-    _publish_all(db, v1["version_id"])
 
     valuation = valuation_service.run_valuation(
         db, company_id, shares=1_000_000_000, market_cap=200e8, market_cap_date="2026-11-01"
@@ -101,19 +90,21 @@ def test_incremental_new_period_keeps_old_versions(db, tmp_path):
     assert v2["version_no"] == 2
     versions = {v["version_no"]: v for v in report_repo.list_versions(db, company_id)}
     assert len(versions) == 2
-    assert versions[1]["status"] == "published"
-    assert versions[2]["status"] == "pending_review"
+    assert versions[1]["status"] == "archived"
+    assert versions[2]["status"] == "published"
 
     view2 = report_service.report_view(db, v2["version_id"])
+    assert view2["version"]["coverage_label"] == "2021年报-2025年报"
     part2 = next(s for s in view2["sections"] if s["part_code"] == "part2")
     assert part2["change_type"] in ("conclusion_rewrite", "data_refresh")
     part6 = next(s for s in view2["sections"] if s["part_code"] == "part6")
-    assert part6["review_status"] == "pending"
+    assert part6["review_status"] == "not_required"
     assert part6["change_type"] != "carried"
 
     # 旧版本内容仍可读取
     old_view = report_service.report_view(db, v1["version_id"])
     assert len(old_view["sections"]) == 7
+    assert old_view["version"]["coverage_label"] == "2021年报-2024年报"
     old_sections = json.dumps(old_view["sections"], ensure_ascii=False, default=str)
     assert "2025年报" not in old_sections
 
@@ -121,7 +112,6 @@ def test_incremental_new_period_keeps_old_versions(db, tmp_path):
     refreshed = valuation_repo.get_version(db, valuation["version_id"])
     assert refreshed["status"] == "pending_review"
 
-    _publish_all(db, v2["version_id"])
     assert report_repo.get_version(db, v2["version_id"])["status"] == "published"
     assert report_repo.get_version(db, v1["version_id"])["status"] == "archived"
 

@@ -15,19 +15,35 @@
 </div>
 
 {% if items %}
+{# 批量确认表单放在表格外，行内复选框用 form 属性关联，避免嵌套表单 #}
+<form id="bulk-form" method="post" action="/companies/{{ company.id }}/pending/confirm">
+  <input type="hidden" name="next" value="/companies/{{ company.id }}/pending{% if only_required %}?only_required=true{% endif %}">
+</form>
 <div class="card">
+  <div class="bulk-bar">
+    <label class="pick-all"><input type="checkbox" id="pick-all"> 全选</label>
+    <span class="small muted" id="pick-count">已选 0 项</span>
+    <button class="btn primary sm" type="submit" form="bulk-form" id="bulk-submit" disabled>批量确认所选</button>
+  </div>
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>报告期</th><th>指标</th><th class="num">数值</th><th>状态</th><th>置信度</th><th>来源定位</th><th>操作</th></tr>
+        <tr>
+          <th class="pick-col"><span class="sr-only">选择</span></th>
+          <th>报告期</th><th>指标</th><th class="num">数值</th><th>状态</th><th>置信度</th><th>来源定位</th><th>操作</th>
+        </tr>
       </thead>
       <tbody>
         {% for item in items %}
         <tr>
+          <td class="pick-col">
+            <input type="checkbox" class="pick" name="value_ids" value="{{ item.id }}" form="bulk-form"
+                   {% if item.status == 'disputed' %}disabled title="争议项需先改值或重新确认"{% endif %}>
+          </td>
           <td class="nowrap">{{ item.period }}</td>
           <td>{{ item.metric }}{% if item.required %}<span class="badge gray">必需</span>{% endif %}</td>
           <td class="num">{{ item.value|cell(item.unit_type) }}</td>
-          <td><span class="dot {{ item.status }}"></span>{{ status_labels.get(item.status, item.status) }}</td>
+          <td>{{ status_labels.get(item.status, item.status) }}</td>
           <td>{{ item.confidence }}</td>
           <td class="small muted">{{ item.source or '手工录入' }}{% if item.page %} · 第 {{ item.page }} 页{% endif %}
             {% if item.row_label %}<br>{{ item.row_label }}{% endif %}
@@ -67,6 +83,29 @@
     </table>
   </div>
 </div>
+<script>
+(function () {
+  var picks = Array.prototype.slice.call(document.querySelectorAll('input.pick:not([disabled])'));
+  var all = document.getElementById('pick-all');
+  var count = document.getElementById('pick-count');
+  var submit = document.getElementById('bulk-submit');
+  function refresh() {
+    var n = picks.filter(function (el) { return el.checked; }).length;
+    count.textContent = '已选 ' + n + ' 项';
+    submit.disabled = n === 0;
+    all.checked = picks.length > 0 && n === picks.length;
+    all.indeterminate = n > 0 && n < picks.length;
+  }
+  if (all) {
+    all.addEventListener('change', function () {
+      picks.forEach(function (el) { el.checked = all.checked; });
+      refresh();
+    });
+  }
+  picks.forEach(function (el) { el.addEventListener('change', refresh); });
+  refresh();
+})();
+</script>
 {% else %}
 <div class="card empty">
   <h2>没有待确认项</h2>

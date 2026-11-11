@@ -16,12 +16,7 @@
 
 <div class="callout small">
   完整度（估值必需指标，最近 5 个年报）：<strong>{{ '%.0f%%'|format(completeness.ratio * 100) }}</strong>
-  （{{ completeness.ok }}/{{ completeness.total }}）。
-  图例：<span class="dot pending"></span>待确认
-  <span class="dot confirmed"></span>已确认
-  <span class="dot locked"></span>已锁定
-  <span class="dot disputed"></span>有争议
-  <span class="dot derived"></span>衍生计算
+  （{{ completeness.ok }}/{{ completeness.total }}）。点开待确认单元格可确认、改值或标记争议。
 </div>
 
 {% for group in matrix.groups %}
@@ -47,7 +42,7 @@
               <span class="muted">—</span>
             {% elif cell.status in ['pending', 'extracted', 'disputed'] %}
               <details class="cell">
-                <summary><span class="dot {{ cell.status }}"></span>{{ cell.value|cell(metric.unit_type) }}</summary>
+                <summary>{{ cell.value|cell(metric.unit_type) }}</summary>
                 <div class="pop inline">
                   <div class="small muted" style="margin-bottom: 6px;">{{ p.label }} · {{ metric.name }}</div>
                   {% if cell.status != 'disputed' %}
@@ -72,7 +67,7 @@
                 </div>
               </details>
             {% else %}
-              <span class="dot {{ cell.status }}{% if metric.derived %} derived{% endif %}"></span>{{ cell.value|cell(metric.unit_type) }}
+              <span class="{% if metric.derived %}muted{% endif %}">{{ cell.value|cell(metric.unit_type) }}</span>
             {% endif %}
           </td>
           {% endfor %}
@@ -99,7 +94,7 @@
           <td>{{ s.name }}</td>
           <td>{{ s.metric }}</td>
           <td class="num">{{ s.value|cell(s.unit_type) }}</td>
-          <td><span class="dot {{ s.status }}"></span>{{ status_labels.get(s.status, s.status) }}</td>
+          <td>{{ status_labels.get(s.status, s.status) }}</td>
         </tr>
         {% endfor %}
       </tbody>
