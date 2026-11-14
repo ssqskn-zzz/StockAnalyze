@@ -2,6 +2,14 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .screenshots/
-data/
 _extract/
 .env
+
+# 原始源文件（体积大、二进制，不在 Git 中）
+data/files/
+data/stockanalyze.db
+
+# SQLite 运行时临时文件
+*.db-wal
+*.db-shm
+*.db-journal
