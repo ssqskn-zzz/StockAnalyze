@@ -2,8 +2,9 @@
 
 规则来自 PRD 7：
 - FCF = 经营净现金流 − 资本开支；
-- 显式期 10 年，g1（1–5 年）、g2（6–10 年）、永续 g；
-- 折现率 r 为配置项，来源层级写入版本；
+- 显式期 10 年，未来 10 年逐年 FCF 增长率由用户按企业配置；永续增长 g；
+- 折现率 r 由用户按企业配置（默认 10%），与逐年增长率一起直接参与 DCF；
+- 每家企业只保留一份估值结果，始终基于最新快照/最新年报重算；
 - 金融企业禁用；净现金项缺失禁止出股权价值；基准 FCF 为负或波动过大降级为"仅供参考"。
 """
 
@@ -18,6 +19,7 @@ from app.db.repositories import metrics as metric_repo
 from app.db.repositories import snapshots as snapshot_repo
 from app.db.repositories import valuations as valuation_repo
 from app.domain import derived as dv
+from app.domain.periods import period_label
 from app.services import metric_service
 from app.utils import now_iso
 
@@ -30,11 +32,10 @@ BASE_METHOD_YEARS = {"1y": 1, "avg3": 3, "avg5": 5, "avg7": 7}
 BASE_METHOD_LABELS = {
     "1y": "最近一年", "avg3": "近 3 年平均", "avg5": "近 5 年平均", "avg7": "近 7 年（或全部可得）平均",
 }
-R_LEVEL_LABELS = {
-    "override": "本版手填", "company": "企业覆盖", "industry": "行业档位",
-    "global": "全局默认", "builtin_default": "内置默认",
-}
 FINANCIAL_TAGS = ("银行", "保险", "证券", "信托", "金融")
+
+# 估值模型版本：口径变化时递增，旧结果会在下次打开估值页时自动重算
+VALUATION_MODEL_VERSION = 2
 
 
 def is_financial(company) -> bool:
@@ -73,12 +74,14 @@ def _base_fcf(annual: list[dict[str, Any]], method: str) -> tuple[float | None, 
     return base, used, note
 
 
-def _project(base: float, *, r: float, g1: float, g2: float, g: float, n: int) -> tuple[list[dict[str, Any]], float, float]:
+def _project(
+    base: float, *, r: float, growth_rates: list[float], g: float, n: int
+) -> tuple[list[dict[str, Any]], float, float]:
     rows = []
     pv_sum = 0.0
     fcf = base
     for year in range(1, n + 1):
-        growth = g1 if year <= 5 else g2
+        growth = growth_rates[year - 1]
         fcf = fcf * (1 + growth)
         factor = 1 / (1 + r) ** year
         pv = fcf * factor
@@ -125,18 +128,9 @@ def _net_cash(values: dict[str, float | None]) -> dict[str, Any]:
     }
 
 
-def _market_cap_stale(market_cap_date: str | None) -> bool:
-    if not market_cap_date:
-        return False
-    try:
-        d = datetime.strptime(market_cap_date, "%Y-%m-%d").date()
-    except ValueError:
-        return True
-    return date.today() - d > timedelta(days=config.MARKET_CAP_VALID_DAYS)
-
-
 def _sensitivity(
-    base: float, *, r: float, g1: float, g2: float, g: float, n: int, net_cash_value: float | None, equity_allowed: bool
+    base: float, *, r: float, growth_rates: list[float], g: float, n: int,
+    net_cash_value: float | None, equity_allowed: bool,
 ) -> dict[str, Any]:
     r_values = sorted({round(min(max(r + delta, config.R_MIN), config.R_MAX), 4) for delta in (-0.04, -0.02, 0, 0.02, 0.04)})
     g_values = [0.0, 0.01, 0.02, 0.03, 0.04]
@@ -147,7 +141,7 @@ def _sensitivity(
             if gg >= rr:
                 row.append(None)
                 continue
-            _, ev, _ = _project(base, r=rr, g1=g1, g2=g2, g=gg, n=n)
+            _, ev, _ = _project(base, r=rr, growth_rates=growth_rates, g=gg, n=n)
             if equity_allowed and net_cash_value is not None:
                 row.append(ev + net_cash_value)
             else:
@@ -169,7 +163,9 @@ def _base_method_comparison(
         base, used, _ = _base_fcf(annual, method)
         if base is None:
             continue
-        _, ev, _ = _project(base, r=params["r"], g1=params["g1"], g2=params["g2"], g=params["g"], n=params["n"])
+        _, ev, _ = _project(
+            base, r=params["r"], growth_rates=params["growth_rates"], g=params["g"], n=params["n"]
+        )
         out.append({
             "method": method,
             "label": BASE_METHOD_LABELS[method],
@@ -181,21 +177,27 @@ def _base_method_comparison(
     return out
 
 
+def _market_cap_stale(market_cap_date: str | None) -> bool:
+    if not market_cap_date:
+        return False
+    try:
+        d = datetime.strptime(market_cap_date, "%Y-%m-%d").date()
+    except ValueError:
+        return True
+    return date.today() - d > timedelta(days=config.MARKET_CAP_VALID_DAYS)
+
+
 def run_valuation(
     conn,
     company_id: int,
     *,
-    scheme: str = "中性",
     base_method: str | None = None,
-    g1: float | None = None,
-    g2: float | None = None,
     g: float | None = None,
-    r_override: float | None = None,
     explicit_years: int | None = None,
     market_cap: float | None = None,
     market_cap_date: str | None = None,
     shares: float | None = None,
-    snapshot_id: int | None = None,
+    note: str = "",
     actor: str = "assistant",
 ) -> dict[str, Any]:
     from app.db.repositories import companies as company_repo
@@ -206,46 +208,55 @@ def run_valuation(
     if is_financial(company):
         raise ValuationError("金融企业（银行/保险/证券/信托）不适用自由现金流估值，口径 A 已禁用")
 
-    snapshot = (snapshot_repo.get_snapshot(conn, snapshot_id) if snapshot_id
-                else snapshot_repo.latest_snapshot(conn, company_id))
+    existing = valuation_repo.get_valuation(conn, company_id)
+    if existing:
+        if market_cap is None:
+            market_cap = existing["market_cap"]
+        if market_cap_date is None:
+            market_cap_date = existing["market_cap_date"]
+        if shares is None:
+            shares = existing["shares"]
+
+    # 始终引用最新快照：企业新增年度数据并生成新快照后，估值自动跟随最新年报
+    snapshot = snapshot_repo.latest_snapshot(conn, company_id)
     if not snapshot:
         raise ValueError("尚无数据快照，请先确认指标并生成快照")
 
     params = {
+        "model": VALUATION_MODEL_VERSION,
         "base_method": base_method or config.DCF_DEFAULTS["base_method"],
         "n": int(explicit_years or config.DCF_DEFAULTS["explicit_years"]),
-        "g1": config.DCF_DEFAULTS["g1"] if g1 is None else g1,
-        "g2": config.DCF_DEFAULTS["g2"] if g2 is None else g2,
         "g": config.DCF_DEFAULTS["g"] if g is None else g,
     }
     if params["base_method"] not in BASE_METHOD_YEARS:
         raise ValuationError(f"未知基准口径：{params['base_method']}")
     if not (5 <= params["n"] <= 15):
         raise ValuationError("显式预测期需在 5–15 年")
-    if not (config.G1_MIN <= params["g1"] <= config.G1_MAX):
-        raise ValuationError("g1 超出 −20%–40%")
-    if params["g2"] > params["g1"]:
-        raise ValuationError("g2 不得高于 g1")
     if not (config.G_RANGE[0] <= params["g"] <= config.G_RANGE[1]):
         raise ValuationError("永续增长率需在 0%–5%")
-    if params["g2"] < params["g"]:
-        raise ValuationError("g2 不得低于永续增长率 g")
 
-    rate_info = valuation_repo.resolve_rate(conn, company)
-    if r_override is not None:
-        if not (config.R_MIN <= r_override <= config.R_MAX):
-            raise ValuationError(f"折现率需在 {config.R_MIN:.0%}–{config.R_MAX:.0%}")
-        rate_info = {
-            "rate": r_override, "level": "override",
-            "config_version": rate_info.get("config_version", 0),
-            "config_id": rate_info.get("config_id"), "industry_tag": rate_info.get("industry_tag"),
-        }
-    r = float(rate_info["rate"])
+    r = valuation_repo.get_discount_rate(conn, company_id)
+    r = float(config.DCF_DEFAULTS["r"]) if r is None else float(r)
+    if not (config.R_MIN <= r <= config.R_MAX):
+        raise ValuationError(f"折现率需在 {config.R_MIN:.0%}–{config.R_MAX:.0%} 区间")
     if r <= params["g"]:
         raise ValuationError("折现率必须大于永续增长率")
     params["r"] = r
-    params["r_source"] = rate_info["level"]
-    params["r_config_version"] = rate_info.get("config_version", 0)
+
+    rates = list(valuation_repo.get_growth_rates(conn, company_id)
+                 or valuation_repo.default_growth_rates())
+    if len(rates) < params["n"]:
+        tail = rates[-1] if rates else config.DCF_DEFAULTS["growth_rates"][-1]
+        rates += [tail] * (params["n"] - len(rates))
+    rates = rates[: params["n"]]
+    for idx, value in enumerate(rates, start=1):
+        if not (config.GROWTH_MIN <= value <= config.GROWTH_MAX):
+            raise ValuationError(
+                f"第 {idx} 年增长率需在 {config.GROWTH_MIN:.0%}–{config.GROWTH_MAX:.0%}"
+            )
+    if rates[-1] < params["g"]:
+        raise ValuationError(f"第 {params['n']} 年增长率不得低于永续增长率 g")
+    params["growth_rates"] = [float(value) for value in rates]
 
     annual = metric_service.snapshot_series(conn, snapshot, "annual")
     if not annual:
@@ -256,7 +267,7 @@ def run_valuation(
     params["base_method_note"] = base_note
 
     projection, enterprise_value, pv_terminal = _project(
-        base, r=r, g1=params["g1"], g2=params["g2"], g=params["g"], n=params["n"]
+        base, r=r, growth_rates=params["growth_rates"], g=params["g"], n=params["n"]
     )
 
     latest = annual[-1]
@@ -308,13 +319,10 @@ def run_valuation(
         notes.insert(0, base_note)
 
     sensitivity = _sensitivity(
-        base, r=r, g1=params["g1"], g2=params["g2"], g=params["g"], n=params["n"],
+        base, r=r, growth_rates=params["growth_rates"], g=params["g"], n=params["n"],
         net_cash_value=net_cash_value, equity_allowed=net_cash["equity_allowed"],
     )
     comparison = _base_method_comparison(annual, params, net_cash_value, net_cash["equity_allowed"])
-
-    model_id = valuation_repo.get_or_create_model(conn, company_id, "A", scheme)
-    version_no = valuation_repo.next_version_no(conn, model_id)
 
     # 记录本次输入指标值（用于溯源与复算）
     input_rows = metric_repo.values_by_ids(conn, snapshot_repo.snapshot_value_ids(snapshot))
@@ -329,13 +337,9 @@ def run_valuation(
         "status": row["status"],
     } for row in input_rows if row["metric_code"] in used_codes]
 
-    version_id = valuation_repo.create_version(
+    valuation_id = valuation_repo.upsert_valuation(
         conn,
-        model_id=model_id,
-        company_id=company_id,
-        version_no=version_no,
-        scheme=scheme,
-        method="A",
+        company_id,
         based_on_snapshot_id=snapshot["id"],
         base_period_id=latest["period"]["id"],
         base_fcf_method=params["base_method"],
@@ -356,16 +360,18 @@ def run_valuation(
         applicability_note="；".join(note for note in notes if note),
         sensitivity={"matrix": sensitivity, "base_methods": comparison},
         input_values=input_values,
-        status="pending_confirm",
-        status_reason="待用户确认",
     )
-    audit.add(conn, object_type="valuation_version", object_id=version_id, action="create",
-              reason=f"基于快照 {snapshot['code']}，r={r:.2%}（{R_LEVEL_LABELS.get(rate_info['level'], rate_info['level'])}）",
-              actor=actor)
+    audit_reason = f"基于快照 {snapshot['code']}，按最新年度数据重算（折现率 {r:.2%}）"
+    if note:
+        audit_reason = f"{note}｜{audit_reason}"
+    audit.add(conn, object_type="valuation", object_id=valuation_id,
+              action="update" if existing else "create",
+              reason=audit_reason, actor=actor)
     return {
-        "version_id": version_id,
-        "version_no": version_no,
+        "valuation_id": valuation_id,
+        "updated": bool(existing),
         "snapshot": snapshot["code"],
+        "base_period_label": latest["period"]["label"],
         "params": params,
         "base_fcf": base,
         "base_years": used_years,
@@ -380,45 +386,71 @@ def run_valuation(
         "applicability_note": "；".join(note for note in notes if note),
         "sensitivity": sensitivity,
         "base_method_comparison": comparison,
-        "status": "pending_confirm",
     }
 
 
-def confirm(conn, version_id: int, actor: str = "user") -> None:
-    version = valuation_repo.get_version(conn, version_id)
-    if not version:
-        raise ValueError("估值版本不存在")
-    if version["status"] not in ("draft", "pending_confirm", "pending_review"):
-        raise ValuationError("当前状态不可确认")
-    valuation_repo.set_status(conn, version_id, "confirmed", "用户确认")
-    used = valuation_repo.parse_json(version["input_values"], []) or []
-    metric_repo.lock_values(conn, [row["value_id"] for row in used if row.get("value_id")])
-    audit.add(conn, object_type="valuation_version", object_id=version_id, action="confirm", actor=actor)
+def needs_refresh(conn, company_id: int) -> bool:
+    """最新快照、模型口径或已保存参数与当前结果不一致时，需要自动重算。"""
+    existing = valuation_repo.get_valuation(conn, company_id)
+    if not existing:
+        return False
+    snapshot = snapshot_repo.latest_snapshot(conn, company_id)
+    if snapshot and existing["based_on_snapshot_id"] != snapshot["id"]:
+        return True
+    current = valuation_repo.parse_json(existing["params"], {}) or {}
+    if int(current.get("model") or 0) != VALUATION_MODEL_VERSION:
+        return True
+    saved_rate = valuation_repo.get_discount_rate(conn, company_id)
+    saved_rate = float(config.DCF_DEFAULTS["r"]) if saved_rate is None else float(saved_rate)
+    if abs(float(current.get("r") or 0) - saved_rate) > 1e-12:
+        return True
+    saved = (valuation_repo.get_growth_rates(conn, company_id)
+             or valuation_repo.default_growth_rates())
+    existing_rates = current.get("growth_rates") or []
+    return len(existing_rates) != len(saved) or any(
+        abs(a - b) > 1e-12 for a, b in zip(existing_rates, saved)
+    )
 
 
-def mark_pending_after_upstream_change(conn, company_id: int, reason: str) -> int:
-    count = valuation_repo.mark_pending_review(conn, company_id, reason)
-    if count:
-        for version in valuation_repo.list_versions(conn, company_id):
-            if version["status"] == "pending_review":
-                audit.add(conn, object_type="valuation_version", object_id=version["id"],
-                          action="pending_review", reason=reason)
-    return count
+def recalculate(conn, company_id: int, *, note: str = "", actor: str = "user") -> dict[str, Any]:
+    """按最新年度数据与已保存参数重算，并原地更新唯一一份估值结果。"""
+    from app.db.repositories import companies as company_repo
+
+    if not company_repo.get_company(conn, company_id):
+        raise ValueError("企业不存在")
+    existing = valuation_repo.get_valuation(conn, company_id)
+    base = valuation_repo.parse_json(existing["params"], {}) if existing else {}
+    return run_valuation(
+        conn, company_id,
+        base_method=base.get("base_method"),
+        g=base.get("g"),
+        explicit_years=base.get("n"),
+        note=note,
+        actor=actor,
+    )
 
 
-def valuation_view(conn, version_id: int) -> dict[str, Any]:
-    version = valuation_repo.get_version(conn, version_id)
-    if not version:
-        raise ValueError("估值版本不存在")
-    params = valuation_repo.parse_json(version["params"], {}) or {}
+def valuation_view(conn, company_id: int) -> dict[str, Any]:
+    valuation = valuation_repo.get_valuation(conn, company_id)
+    if not valuation:
+        raise ValueError("尚无估值结果")
+    params = valuation_repo.parse_json(valuation["params"], {}) or {}
+    sensitivity = valuation_repo.parse_json(valuation["sensitivity"], {}) or {}
+    base_period_label = None
+    if valuation["base_period_id"]:
+        period = conn.execute(
+            "SELECT period_type, fiscal_year FROM periods WHERE id=?", (valuation["base_period_id"],)
+        ).fetchone()
+        if period:
+            base_period_label = period_label(period["period_type"], period["fiscal_year"])
     return {
-        "version": dict(version),
+        "valuation": dict(valuation),
+        "base_period_label": base_period_label,
         "params": params,
         "params_json": params,
-        "fcf_detail": valuation_repo.parse_json(version["fcf_detail"], []) or [],
-        "projection": valuation_repo.parse_json(version["projection"], {}) or {},
-        "net_cash": valuation_repo.parse_json(version["net_cash"], {}) or {},
-        "sensitivity": valuation_repo.parse_json(version["sensitivity"], {}) or {},
-        "input_values": valuation_repo.parse_json(version["input_values"], []) or [],
-        "r_label": R_LEVEL_LABELS.get(params.get("r_source", ""), params.get("r_source", "")),
+        "fcf_detail": list(reversed(valuation_repo.parse_json(valuation["fcf_detail"], []) or [])),
+        "projection": valuation_repo.parse_json(valuation["projection"], {}) or {},
+        "net_cash": valuation_repo.parse_json(valuation["net_cash"], {}) or {},
+        "sensitivity": sensitivity,
+        "input_values": valuation_repo.parse_json(valuation["input_values"], []) or [],
     }

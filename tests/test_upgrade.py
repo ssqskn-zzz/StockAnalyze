@@ -50,6 +50,79 @@ def test_public_parse_rows_maps_period_and_dedupes():
     assert {i["metric_code"] for i in cash} == {"ocf", "capex"}
     assert next(i for i in cash if i["metric_code"] == "ocf")["period_type"] == "annual"
 
+    balance = public_data.parse_rows(
+        [{
+            "REPORT_DATE": "2026-09-30",
+            "MONETARYFUNDS": 100.0,
+            "SHORT_LOAN": 10.0,
+            "NONCURRENT_LIAB_1YEAR": 2.0,
+            "LONG_LOAN": None,
+            "BOND_PAYABLE": None,
+            "SHARE_CAPITAL": 66.0,
+        }],
+        public_data.BALANCE_FIELDS,
+    )
+    assert {i["metric_code"] for i in balance} == {
+        "cash", "short_term_borrowings", "current_portion_lt_debt", "share_capital",
+    }
+    assert next(i for i in balance if i["metric_code"] == "cash")["period_type"] == "q3"
+
+
+def test_public_parse_full_statements_and_derived_margin():
+    income = public_data.parse_rows(
+        [{
+            "REPORT_DATE": "2026-09-30",
+            "TOTAL_OPERATE_INCOME": 1000.0,
+            "OPERATE_COST": 300.0,
+            "SALE_EXPENSE": 120.0,
+            "MANAGE_EXPENSE": 80.0,
+            "RESEARCH_EXPENSE": 60.0,
+            "FINANCE_EXPENSE": -5.0,
+            "NETPROFIT": 210.0,
+            "PARENT_NETPROFIT": 205.0,
+            "DEDUCT_PARENT_NETPROFIT": 190.0,
+        }],
+        public_data.INCOME_FIELDS,
+    )
+    by_code = {i["metric_code"]: i["value"] for i in income}
+    assert by_code["revenue"] == 1000.0
+    assert by_code["operating_cost"] == 300.0
+    assert by_code["rnd_expense"] == 60.0
+    assert by_code["net_profit"] == 210.0
+
+    cash = public_data.parse_rows(
+        [{"REPORT_DATE": "2026-09-30", "NETCASH_OPERATE": 88.0, "RATE_CHANGE_EFFECT": -3.0}],
+        public_data.FULL_CASH_FIELDS,
+    )
+    assert {i["metric_code"] for i in cash} == {"ocf", "fx_effect"}
+
+    balance = public_data.parse_rows(
+        [{
+            "REPORT_DATE": "2026-09-30",
+            "NOTE_ACCOUNTS_RECE": 11.0,
+            "INVENTORY": 22.0,
+            "TOTAL_ASSETS": 500.0,
+            "NOTE_ACCOUNTS_PAYABLE": 33.0,
+            "TOTAL_LIABILITIES": 120.0,
+            "TOTAL_EQUITY": 380.0,
+        }],
+        public_data.BALANCE_FIELDS,
+    )
+    assert {i["metric_code"] for i in balance} == {
+        "receivables", "inventory", "total_assets", "payables", "total_liabilities", "total_equity",
+    }
+
+    # 毛利率缺失时由营收与营业成本推算，已有的不覆盖
+    items = public_data._fill_gross_margin(
+        [dict(i) for i in income] + [{"metric_code": "gross_margin", "period_type": "annual",
+                                     "fiscal_year": 2025, "value": 0.5, "unit": "ratio",
+                                     "raw_value": 50.0, "raw_unit": "%"}]
+    )
+    margins = {i["fiscal_year"]: i for i in items if i["metric_code"] == "gross_margin"}
+    assert margins[2026]["value"] == pytest.approx(0.70)
+    assert margins[2026]["is_derived"] is True
+    assert margins[2025]["value"] == 0.5
+
 
 def test_download_store_dedupes_by_content(db, tmp_path):
     company_repo.create_company(db, name="去重公司", market="A", code="600010")
@@ -70,8 +143,10 @@ def test_report_written_to_markdown_and_rendered(db, tmp_path):
 
     result = report_service.generate_report(db, company_id)
     version = db.execute("SELECT * FROM report_versions WHERE id=?", (result["version_id"],)).fetchone()
-    report_path = Path(version["file_path"])
-    assert report_path.exists() and report_path.suffix == ".md"
+    # 库内存相对路径，读取时按项目根/数据目录解析，可随目录搬迁
+    assert not Path(version["file_path"]).is_absolute()
+    report_path = report_files.resolve_path(version["file_path"])
+    assert report_path is not None and report_path.exists() and report_path.suffix == ".md"
     assert "_S1_v1" in report_path.name
     content = report_path.read_text(encoding="utf-8")
     assert "# 报告公司 深度分析报告" in content
@@ -90,11 +165,20 @@ def test_report_written_to_markdown_and_rendered(db, tmp_path):
 
     # 再生成一版：新文件，旧文件保留，不覆盖
     second = report_service.generate_report(db, company_id)
-    second_path = Path(
+    second_path = report_files.resolve_path(
         db.execute("SELECT file_path FROM report_versions WHERE id=?", (second["version_id"],)).fetchone()[0]
     )
+    assert second_path is not None
     assert second_path != report_path and report_path.exists() and second_path.exists()
     assert "_v2" in second_path.name
+
+    # 旧机器遗留的绝对路径：按 reports/ 之后的目录回落，仍能读到正文
+    legacy_path = f"D:/old_pc/StockAnalyze/data/reports/{report_path.parent.name}/{report_path.name}"
+    db.execute("UPDATE report_versions SET file_path=? WHERE id=?", (legacy_path, result["version_id"]))
+    db.commit()
+    assert report_files.resolve_path(legacy_path) == report_path
+    moved_view = report_service.report_view(db, result["version_id"])
+    assert any(section["html"] for section in moved_view["sections"])
 
 
 def test_markdown_file_name_contains_company_period_snapshot_version():

@@ -10,7 +10,6 @@ from openpyxl import Workbook
 from app import config
 from app.db import connection
 from app.db.repositories import metrics as metric_repo
-from app.db.repositories import valuations as valuation_repo
 
 
 @pytest.fixture()
@@ -22,7 +21,6 @@ def db(tmp_path, monkeypatch):
     connection.init_db()
     with connection.session() as conn:
         metric_repo.seed_metrics(conn)
-        valuation_repo.ensure_default_config(conn)
         conn.commit()  # 先释放写事务，避免与工作台请求的连接互锁
         yield conn
 

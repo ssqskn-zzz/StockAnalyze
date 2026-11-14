@@ -87,6 +87,8 @@ def build_content(
     ld = latest["derived"]
     name = company["name"]
     recent = annual[-5:]
+    # 展示用倒序：近期在前、远期在后（数据逻辑仍用 chronological 的 recent）
+    recent_desc = list(reversed(recent))
 
     # ---------------- Part 1 企业印象 ----------------
     roe = ld.get("roe_deducted")
@@ -114,12 +116,12 @@ def build_content(
                   "cited": ["revenue", "net_profit_deducted", "roe_deducted", "gross_margin"]})
 
     # ---------------- Part 2 基本经营情况 ----------------
-    cols = ["指标"] + [item["period"]["label"] for item in recent]
+    cols = ["指标"] + [item["period"]["label"] for item in recent_desc]
     rows = []
     for label, code in (("营业收入", "revenue"), ("扣非净利润", "net_profit_deducted"),
                         ("归母净利润", "net_profit_parent"), ("经营净现金流", "ocf")):
-        rows.append([label] + [_yi(item["values"].get(code)) for item in recent])
-    rows.append(["营业收入同比"] + [_pct(item["derived"].get("revenue_yoy")) for item in recent])
+        rows.append([label] + [_yi(item["values"].get(code)) for item in recent_desc])
+    rows.append(["营业收入同比"] + [_pct(item["derived"].get("revenue_yoy")) for item in recent_desc])
     part2_blocks = [
         _paragraph("结论先行：先看规模与增长，再看成本结构与分部结构；所有数字均来自已确认指标值。", []),
         {"type": "heading", "text": "2.1 基础经营指标"},
@@ -130,8 +132,8 @@ def build_content(
     for label, code in (("营业成本", "operating_cost"), ("销售费用", "selling_expense"),
                         ("管理费用", "admin_expense"), ("研发费用", "rnd_expense"),
                         ("财务费用", "finance_expense")):
-        cost_rows.append([label] + [_yi(item["values"].get(code)) for item in recent])
-    cost_rows.append(["毛利率"] + [_pct(item["derived"].get("gross_margin")) for item in recent])
+        cost_rows.append([label] + [_yi(item["values"].get(code)) for item in recent_desc])
+    cost_rows.append(["毛利率"] + [_pct(item["derived"].get("gross_margin")) for item in recent_desc])
     part2_blocks += [
         {"type": "heading", "text": "2.2 成本结构"},
         _table("成本结构与毛利率", cols, cost_rows),
@@ -140,7 +142,7 @@ def build_content(
     ratio_rows = []
     for label, code in (("扣非 ROE", "roe_deducted"), ("扣非净利率", "net_margin_deducted"),
                         ("经营净现金流 ÷ 净利润", "ocf_to_net_profit")):
-        ratio_rows.append([label] + [_pct(item["derived"].get(code)) for item in recent])
+        ratio_rows.append([label] + [_pct(item["derived"].get(code)) for item in recent_desc])
     part2_blocks += [
         {"type": "heading", "text": "2.3 毛利率与扣非 ROE 走势"},
         _table("回报与利润率", cols, ratio_rows),
@@ -152,11 +154,12 @@ def build_content(
     ]
 
     q_recent = quarterly[-4:]
-    q_cols = ["指标"] + [item["period"]["label"] for item in q_recent]
+    q_recent_desc = list(reversed(q_recent))
+    q_cols = ["指标"] + [item["period"]["label"] for item in q_recent_desc]
     q_rows = [
-        ["营业收入（累计）"] + [_yi(item["values"].get("revenue")) for item in q_recent],
-        ["经营净现金流（累计）"] + [_yi(item["values"].get("ocf")) for item in q_recent],
-        ["扣非净利润（累计）"] + [_yi(item["values"].get("net_profit_deducted")) for item in q_recent],
+        ["营业收入（累计）"] + [_yi(item["values"].get("revenue")) for item in q_recent_desc],
+        ["经营净现金流（累计）"] + [_yi(item["values"].get("ocf")) for item in q_recent_desc],
+        ["扣非净利润（累计）"] + [_yi(item["values"].get("net_profit_deducted")) for item in q_recent_desc],
     ]
     part2_blocks += [
         {"type": "heading", "text": "2.4 季度节奏"},
@@ -273,7 +276,7 @@ def build_content(
         ("非流动负债合计", "non_current_liabilities_total"), ("负债合计", "total_liabilities"),
         ("所有者权益合计", "total_equity"),
     ]
-    bs_rows = [[label] + [_yi(item["values"].get(code)) for item in recent] for label, code in bs_items]
+    bs_rows = [[label] + [_yi(item["values"].get(code)) for item in recent_desc] for label, code in bs_items]
     interest_debt = None
     if lv.get("short_term_borrowings") is not None or lv.get("long_term_borrowings") is not None:
         interest_debt = sum(lv.get(c) or 0 for c in (
@@ -291,7 +294,7 @@ def build_content(
     for label, code in (("应收账款周转天数", "ar_turnover_days"), ("应付账款周转天数", "ap_turnover_days")):
         turnover_rows.append([label] + [
             f"{item['derived'].get(code):.0f}" if item["derived"].get(code) is not None else "—"
-            for item in recent
+            for item in recent_desc
         ])
     part5_blocks += [
         {"type": "heading", "text": "5.2 周转与有息负债"},
@@ -356,22 +359,18 @@ def build_content(
     parts.append({"code": "part7", "title": "Part 7 风险点", "blocks": part7_blocks,
                   "cited": ["revenue", "receivables", "ocf_to_net_profit", "debt_ratio", "fcf"]})
 
-    # 估值引用卡片（不复制数字逻辑，只引用版本）
+    # 估值引用卡片（不复制数字逻辑，只引用唯一一份估值结果）
     if valuation is not None:
         part1.append({
             "type": "valuation_card",
-            "version_id": valuation["id"],
-            "version_no": valuation["version_no"],
-            "scheme": valuation["scheme"],
             "company_id": company["id"],
             "equity_value": valuation["equity_value"],
             "per_share_value": valuation["per_share_value"],
-            "status": valuation["status"],
-            "generated_at": valuation["created_at"],
+            "updated_at": valuation["updated_at"],
             "snapshot_code": snapshot_code,
         })
     else:
-        part1.append(_note("尚无已确认估值版本，结论卡片仅含经营判断。"))
+        part1.append(_note("尚无估值结果，结论卡片仅含经营判断。"))
 
     return parts
 

@@ -18,9 +18,6 @@ def badge_for(stats: dict[str, Any]) -> list[dict[str, str]]:
     badges = []
     if stats["pending"]:
         badges.append({"text": f"待确认 {stats['pending']}", "kind": "warn"})
-    valuation = stats.get("valuation")
-    if valuation and valuation["status"] == "pending_review":
-        badges.append({"text": "估值待复核", "kind": "danger"})
     report = stats.get("report")
     if report and report["status"] == "pending_review":
         badges.append({"text": f"报告 v{report['version_no']} 待审阅", "kind": "warn"})
@@ -48,7 +45,7 @@ def dashboard(conn) -> dict[str, Any]:
             "SELECT COUNT(*) AS n FROM metric_values WHERE is_current=1 AND status IN ('pending','extracted')"
         ).fetchone()["n"],
         "reports": conn.execute("SELECT COUNT(*) AS n FROM report_versions").fetchone()["n"],
-        "valuations": conn.execute("SELECT COUNT(*) AS n FROM valuation_versions").fetchone()["n"],
+        "valuations": conn.execute("SELECT COUNT(*) AS n FROM valuations").fetchone()["n"],
     }
     return {"cards": cards, "totals": totals}
 
@@ -58,8 +55,8 @@ def company_overview(conn, company_id: int) -> dict[str, Any]:
     if not company:
         raise ValueError("企业不存在")
     stats = metric_service.company_stats(conn, company_id)
-    periods = company_repo.list_periods(conn, company_id)
-    annual = metric_service.period_series(conn, company_id, "annual")[-6:]
+    periods = list(reversed(company_repo.list_periods(conn, company_id)))
+    annual = list(reversed(metric_service.period_series(conn, company_id, "annual")[-6:]))
     latest_snapshot = stats.get("snapshot")
     return {
         "company": dict(company),
@@ -105,11 +102,12 @@ def lineage(conn, company_id: int) -> dict[str, Any]:
             "title": f"R{v['version_no']}（{v['status']}）",
             "detail": (v["change_summary"] or "").split("\n")[0],
         })
-    for val in valuation_repo.list_versions(conn, company_id):
+    valuation = valuation_repo.get_valuation(conn, company_id)
+    if valuation:
         events.append({
-            "time": val["created_at"], "kind": "估值版本",
-            "title": f"V{val['version_no']}·{val['scheme']}（{val['status']}）",
-            "detail": f"基准 {val['base_fcf_method']}｜快照 #{val['based_on_snapshot_id']}",
+            "time": valuation["updated_at"], "kind": "估值",
+            "title": f"每股 {valuation['per_share_value']:.2f} 元" if valuation["per_share_value"] else "DCF 估值",
+            "detail": f"基准 {valuation['base_fcf_method']}｜快照 #{valuation['based_on_snapshot_id']}",
         })
     for rec in audit.list_recent(conn, company_id, 30):
         events.append({
@@ -147,20 +145,6 @@ def processing(conn) -> dict[str, Any]:
     ).fetchall()
     fetch_logs = [dict(r) for r in company_repo.list_fetch_logs(conn, None, 30)]
     return {"batches": batches, "files": [dict(f) for f in files], "fetch_logs": fetch_logs}
-
-
-def discount_rate_page(conn) -> dict[str, Any]:
-    from app import config
-
-    configs = [dict(c) for c in valuation_repo.list_configs(conn)]
-    companies = [dict(c) for c in company_repo.list_companies(conn)]
-    return {
-        "configs": configs,
-        "companies": companies,
-        "default_rate": config.DCF_DEFAULTS["r_default"],
-        "r_min": config.R_MIN,
-        "r_max": config.R_MAX,
-    }
 
 
 def company_period_labels(conn, company_id: int) -> dict[int, str]:

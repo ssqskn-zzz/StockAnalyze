@@ -4,70 +4,97 @@
 <div class="crumbs"><a href="/">企业</a> / <a href="/companies/{{ company.id }}">{{ company.name }}</a> / DCF 估值</div>
 <div class="page-head">
   <div>
-    <h1>DCF 估值 <span class="muted" style="font-size: 13px; font-weight: 400;">V{{ version.version_no }} · {{ version.scheme }}</span></h1>
+    <h1>DCF 估值 <span class="muted" style="font-size: 13px; font-weight: 400;">以最新年报为准 · 折现率 {{ params.r|pct }}</span></h1>
     <p class="muted">
-      口径 A：自由现金流 = 经营净现金流 − 资本开支 ｜ 快照 #{{ version.based_on_snapshot_id }} ｜ 状态 {{ version.status }}
-      {% if version.status == 'pending_review' %}｜<span class="badge danger">上游数据变化，待复核</span>{% endif %}
+      口径 A：自由现金流 = 经营净现金流 − 资本开支 ｜ 快照 #{{ valuation.based_on_snapshot_id }}{% if base_period_label %} ｜ 基准 {{ base_period_label }}{% endif %} ｜ 更新于 {{ valuation.updated_at }}
     </p>
-    <div class="actions">
-      {% for v in versions %}
-      <a class="chip {{ 'on' if v.id == version.id else '' }}" href="?version_id={{ v.id }}">V{{ v.version_no }} · {{ v.status }}</a>
-      {% endfor %}
-    </div>
   </div>
   <div class="actions">
-    {% if version.status in ['pending_confirm', 'pending_review', 'draft'] %}
-    <form method="post" action="/valuations/{{ version.id }}/confirm">
-      <input type="hidden" name="next" value="/companies/{{ company.id }}/valuation?version_id={{ version.id }}">
-      <button class="btn primary" type="submit">确认本估值版本</button>
-    </form>
-    {% endif %}
     <a class="btn" href="/companies/{{ company.id }}/data">查看输入数据</a>
   </div>
 </div>
 
-{% if version.applicability_note %}
-<div class="callout {{ 'warn' if version.applicability != 'normal' else '' }} small">{{ version.applicability_note }}</div>
+{% if valuation.applicability_note %}
+<div class="callout {{ 'warn' if valuation.applicability != 'normal' else '' }} small">{{ valuation.applicability_note }}</div>
 {% endif %}
+
+<div class="card">
+  <div class="card-head"><h2>企业估值参数</h2><span class="small muted">每企业只保留一份，保存后立即按最新年度数据重算</span></div>
+  <form method="post" action="/companies/{{ company.id }}/valuation/settings">
+    <div class="form-row">
+      <div style="flex: 0 0 140px; min-width: 120px;">
+        <label>折现率 r（%）</label>
+        <input type="number" step="0.01" name="discount_rate" value="{{ '%.2f'|format(settings.discount_rate * 100) }}" required>
+      </div>
+      <div style="flex: 2; min-width: 220px;">
+        <label>变更原因（可选）</label>
+        <input type="text" name="reason" placeholder="如：按年报披露的确定性下调增长率/折现率">
+      </div>
+    </div>
+    <div class="form-row" style="margin-top: 4px;">
+      {% for i in range(1, 11) %}
+      <div style="flex: 0 0 92px; min-width: 86px;">
+        <label>第{{ i }}年 FCF 增长率（%）</label>
+        <input type="number" step="0.01" name="growth_rate_{{ i }}" value="{{ '%.2f'|format(settings.growth_rates[i-1] * 100) }}" required>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="form-row" style="margin-top: 10px;">
+      <div><button class="btn" type="submit">保存并重算</button></div>
+      <span class="small muted">保存后立即用这组参数重算 10 年预测与估值。</span>
+    </div>
+  </form>
+  <p class="small muted" style="margin-top: 8px;">
+    折现率 r 与未来 10 年逐年 <b>FCF 增长率</b>都直接参与 DCF：预测表、企业价值、股权价值与每股价值都会随它们变化。
+    折现率允许 {{ '%.0f%%'|format(r_min * 100) }}–{{ '%.0f%%'|format(r_max * 100) }}（默认 {{ '%.0f%%'|format(default_discount_rate * 100) }}）；
+    增长率允许 {{ '%.0f%%'|format(growth_min * 100) }}–{{ '%.0f%%'|format(growth_max * 100) }}，
+    默认前 5 年 {{ '%.0f%%'|format(default_growth_rates[0] * 100) }}、后 5 年 {{ '%.0f%%'|format(default_growth_rates[9] * 100) }}。
+  </p>
+  {% if saved %}<div class="callout good small">已保存并重算：企业价值 {{ valuation.enterprise_value|yi }} 亿元，股权价值 {{ valuation.equity_value|yi }} 亿元。</div>{% endif %}
+  {% if error %}<div class="callout danger small">{{ error }}</div>{% endif %}
+  <form class="form-row" method="post" action="/companies/{{ company.id }}/valuation/recalculate">
+    <div><button class="btn" type="submit">重新计算</button></div>
+    <span class="small muted">按最新快照/年报与已保存参数重算，原地更新这一份结果。</span>
+  </form>
+</div>
 
 <div class="grid cols-4" style="margin-bottom: 18px;">
   <div class="kpi">
     <div class="label">企业价值</div>
-    <div class="value">{{ version.enterprise_value|yi }}</div>
+    <div class="value">{{ valuation.enterprise_value|yi }}</div>
     <div class="hint">亿元</div>
   </div>
   <div class="kpi">
     <div class="label">股权价值</div>
-    <div class="value">{{ version.equity_value|yi }}</div>
-    <div class="hint">{{ '净现金项缺失，未出股权价值' if version.equity_value is none else '企业价值 + 净现金' }}</div>
+    <div class="value">{{ valuation.equity_value|yi }}</div>
+    <div class="hint">{{ '净现金项缺失，未出股权价值' if valuation.equity_value is none else '企业价值 + 净现金' }}</div>
   </div>
   <div class="kpi">
     <div class="label">每股价值</div>
-    <div class="value">{{ version.per_share_value|num(2) }}</div>
+    <div class="value">{{ valuation.per_share_value|num(2) }}</div>
     <div class="hint">元 / 股</div>
   </div>
   <div class="kpi">
     <div class="label">相对市值折溢价</div>
-    <div class="value">{{ version.premium_discount|pct }}</div>
+    <div class="value">{{ valuation.premium_discount|pct }}</div>
     <div class="hint">(股权价值 − 市值) ÷ 市值</div>
   </div>
 </div>
 
 <div class="grid cols-2">
   <div class="card">
-    <div class="card-head"><h2>参数</h2><span class="small muted">折现率来源：{{ r_label }}</span></div>
+    <div class="card-head"><h2>参数</h2><span class="small muted">本次估值的实际口径</span></div>
     <table>
       <tr><th>基准 FCF 口径</th><td>{{ params.base_method }}（{{ params.base_method_note or '按可得年度' }}）</td></tr>
-      <tr><th>基准 FCF</th><td>{{ version.base_fcf_value|yi }} 亿元</td></tr>
+      <tr><th>基准 FCF</th><td>{{ valuation.base_fcf_value|yi }} 亿元</td></tr>
       <tr><th>显式预测期</th><td>{{ params.n }} 年</td></tr>
-      <tr><th>g1（1–5 年）</th><td>{{ params.g1|pct }}</td></tr>
-      <tr><th>g2（6–10 年）</th><td>{{ params.g2|pct }}</td></tr>
+      <tr><th>FCF 增长率（10 年）</th><td>{% if params.get('growth_rates') %}<span class="small">{% for r in params.growth_rates %}{{ '第%d年 %.2f%%'|format(loop.index, r * 100) }}{% if not loop.last %} · {% endif %}{% endfor %}</span>{% else %}按内置默认逐年序列{% endif %}</td></tr>
       <tr><th>永续增长率 g</th><td>{{ params.g|pct }}</td></tr>
-      <tr><th>折现率 r</th><td>{{ params.r|pct }}（{{ r_label }}，配置版本 {{ params.r_config_version }}）</td></tr>
-      <tr><th>总股本</th><td>{{ version.shares|num(0) }}</td></tr>
-      <tr><th>市值时点</th><td>{{ version.market_cap_date or '—' }}｜{{ version.market_cap|yi }} 亿元</td></tr>
-      <tr><th>FCF 波动度</th><td>{{ version.stability|num(2) }}</td></tr>
-      <tr><th>适用性</th><td>{{ version.applicability }}</td></tr>
+      <tr><th>折现率 r</th><td>{{ params.r|pct }}</td></tr>
+      <tr><th>总股本</th><td>{{ valuation.shares|num(0) }}</td></tr>
+      <tr><th>市值时点</th><td>{{ valuation.market_cap_date or '—' }}｜{{ valuation.market_cap|yi }} 亿元</td></tr>
+      <tr><th>FCF 波动度</th><td>{{ valuation.stability|num(2) }}</td></tr>
+      <tr><th>适用性</th><td>{{ valuation.applicability }}</td></tr>
     </table>
   </div>
 
@@ -106,7 +133,7 @@
   <div class="card-head"><h2>10 年预测</h2><span class="small muted">终值现值 {{ projection.pv_terminal|yi }} 亿元</span></div>
   <div class="table-wrap flush">
     <table>
-      <thead><tr><th>年</th><th class="num">增长率</th><th class="num">预测 FCF（亿元）</th><th class="num">折现因子</th><th class="num">现值（亿元）</th></tr></thead>
+      <thead><tr><th>年</th><th class="num">FCF 增长率</th><th class="num">预测 FCF（亿元）</th><th class="num">折现因子</th><th class="num">现值（亿元）</th></tr></thead>
       <tbody>
         {% for row in projection.rows %}
         <tr><td>{{ row.year }}</td><td class="num">{{ row.growth|pct }}</td><td class="num">{{ row.fcf|yi }}</td><td class="num">{{ row.factor|num(4) }}</td><td class="num">{{ row.pv|yi }}</td></tr>
@@ -156,25 +183,26 @@
   </div>
 </div>
 
-<div class="card">
-  <div class="card-head"><h2>输入指标值（溯源）</h2><span class="small muted">共 {{ input_values|length }} 项</span></div>
-  <div class="table-wrap flush">
-    <table>
-      <thead><tr><th>指标</th><th>财年</th><th class="num">数值</th><th>状态</th><th>指标值 id</th><th>版本</th></tr></thead>
-      <tbody>
-        {% for item in input_values %}
-        <tr>
-          <td>{{ item.code }}</td><td>{{ item.period }}</td>
-          <td class="num">{{ item.value|num(2) }}</td>
-          <td>{{ status_labels.get(item.status, item.status) }}</td>
-          <td class="muted">#{{ item.value_id }}</td><td>{{ item.version_no }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+{% include "_valuation_notes.html" %}
+
+<details class="card notes">
+  <summary>输入指标值（溯源） · 共 {{ input_values|length }} 项</summary>
+  <div class="notes-body">
+    <div class="table-wrap flush">
+      <table>
+        <thead><tr><th>指标</th><th>财年</th><th class="num">数值</th><th>状态</th><th>指标值 id</th><th>值序号</th></tr></thead>
+        <tbody>
+          {% for item in input_values %}
+          <tr>
+            <td>{{ item.code }}</td><td>{{ item.period }}</td>
+            <td class="num">{{ item.value|num(2) }}</td>
+            <td>{{ status_labels.get(item.status, item.status) }}</td>
+            <td class="muted">#{{ item.value_id }}</td><td>{{ item.version_no }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </div>
-  <p class="small muted" style="margin-top: 8px;">
-    调整参数或重算请在助手侧执行：<code>python -m app.cli value --company {{ company.id }} --base avg5 --r 0.10</code>，新版本不会覆盖当前版本。
-  </p>
-</div>
+</details>
 {% endblock %}

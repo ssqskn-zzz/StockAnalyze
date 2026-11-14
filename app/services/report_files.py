@@ -61,10 +61,9 @@ def blocks_to_markdown(blocks: Iterable[dict[str, Any]]) -> str:
                 lines.append(f"*{caption}*")
         elif kind == "valuation_card":
             company_id = block.get("company_id")
-            label = f"V{block.get('version_no')} · {block.get('scheme')}"
-            link = f"/companies/{company_id}/valuation?version_id={block.get('version_id')}" if company_id else ""
-            parts = [f"估值引用：[{label}]({link})" if link else f"估值引用：{label}",
-                     f"状态 {block.get('status')}"]
+            label = "DCF 估值"
+            link = f"/companies/{company_id}/valuation" if company_id else ""
+            parts = [f"估值引用：[{label}]({link})" if link else f"估值引用：{label}"]
             if block.get("equity_value") is not None:
                 parts.append(f"股权价值 {block['equity_value'] / 1e8:,.2f} 亿元")
             else:
@@ -81,6 +80,62 @@ def coverage_text(coverage: list[str]) -> str:
     if not coverage:
         return "未覆盖"
     return coverage[0] if len(coverage) == 1 else f"{coverage[0]}-{coverage[-1]}"
+
+
+def stored_path(path: str | Path) -> str:
+    """把磁盘路径转成可随项目目录搬迁的引用。
+
+    优先存「相对项目根」的路径（如 data/reports/600276_恒瑞医药/x.md）；
+    数据目录被环境变量指到项目外时，退回「相对数据目录」；两者都不适用才保留绝对路径。
+    """
+    try:
+        resolved = Path(path).resolve()
+    except OSError:
+        return str(path)
+    for base in (config.BASE_DIR, config.DATA_DIR):
+        try:
+            return resolved.relative_to(Path(base).resolve()).as_posix()
+        except ValueError:
+            continue
+    return str(resolved)
+
+
+def resolve_path(stored: str | Path | None) -> Path | None:
+    """解析库内记录的报告文件路径，兼容旧机器遗留的绝对路径。
+
+    依次尝试：原样路径 → 相对项目根 / 数据目录 / reports 目录 → 旧绝对路径中
+    `reports/` 之后的部分 → 按文件名在 reports 目录下兜底查找。
+    """
+    if not stored:
+        return None
+    raw = str(stored).strip()
+    if not raw:
+        return None
+    recorded = Path(raw)
+    if not recorded.is_absolute() and "\\" in raw:
+        recorded = Path(raw.replace("\\", "/"))
+    candidates: list[Path] = []
+    if recorded.is_absolute():
+        candidates.append(recorded)
+        parts = recorded.as_posix().split("/")
+        if "reports" in parts:
+            candidates.append(config.REPORTS_DIR.joinpath(*parts[parts.index("reports") + 1:]))
+    else:
+        candidates.extend([config.BASE_DIR / recorded, config.DATA_DIR / recorded, config.REPORTS_DIR / recorded])
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    if recorded.name:
+        try:
+            matches = sorted(config.REPORTS_DIR.rglob(recorded.name))
+        except OSError:
+            matches = []
+        if matches:
+            return matches[0]
+    return None
 
 
 def report_directory(company) -> Path:
@@ -138,8 +193,11 @@ def write_report(path: Path, content: str) -> tuple[Path, str]:
 
 
 def read_markdown(path: str | Path) -> str:
+    resolved = resolve_path(path)
+    if resolved is None:
+        return ""
     try:
-        return Path(path).read_text(encoding="utf-8")
+        return resolved.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return ""
 

@@ -17,7 +17,7 @@
   <div class="kpi"><div class="label">报告期</div><div class="value">{{ totals.periods }}</div></div>
   <div class="kpi"><div class="label">待确认指标值</div><div class="value">{{ totals.pending }}</div></div>
   <div class="kpi"><div class="label">报告版本</div><div class="value">{{ totals.reports }}</div></div>
-  <div class="kpi"><div class="label">估值版本</div><div class="value">{{ totals.valuations }}</div></div>
+  <div class="kpi"><div class="label">已出估值</div><div class="value">{{ totals.valuations }}</div></div>
 </div>
 
 {% if cards %}
@@ -40,10 +40,6 @@
     <div style="margin-top: 10px;">
       <div class="row"><span class="muted">覆盖报告期</span><span>{{ card.stats.period_count }} 个（年报 {{ card.stats.annual_count }}）</span></div>
       <div class="row"><span class="muted">最新期间</span><span>{{ card.stats.latest_period }}</span></div>
-      <div class="row"><span class="muted">最近快照</span><span>{{ card.snapshot.code if card.snapshot else '—' }}</span></div>
-      <div class="row"><span class="muted">最新报告</span><span>{% if card.report %}v{{ card.report.version_no }} · {{ card.report.status }}{% else %}—{% endif %}</span></div>
-      <div class="row"><span class="muted">最新估值</span><span>{% if card.valuation %}V{{ card.valuation.version_no }} · {{ card.valuation.status }}{% else %}—{% endif %}</span></div>
-      <div class="row"><span class="muted">估值数据完整度</span><span>{{ '%.0f%%'|format(card.stats.completeness.ratio * 100) }}</span></div>
     </div>
   </a>
   {% endfor %}

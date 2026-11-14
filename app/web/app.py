@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -72,7 +73,6 @@ async def lifespan(app: FastAPI):
     connection.init_db()
     with connection.session() as conn:
         metric_repo.seed_metrics(conn)
-        valuation_repo.ensure_default_config(conn)
     yield
 
 
@@ -186,39 +186,88 @@ def report_latest(request: Request, company_id: int, version: int | None = None)
 
 
 @app.get("/companies/{company_id}/valuation")
-def valuation_page(request: Request, company_id: int, version_id: int | None = None):
+def valuation_page(
+    request: Request, company_id: int, saved: int = 0, error: str = "",
+):
     with connection.session() as conn:
         overview = query_service.company_overview(conn, company_id)
         company = overview["company"]
-        versions = valuation_repo.list_versions(conn, company_id)
-        row = None
-        if version_id:
-            row = valuation_repo.get_version(conn, version_id)
-        elif versions:
-            row = versions[0]
+        row = valuation_repo.get_valuation(conn, company_id)
+        if row and valuation_service.needs_refresh(conn, company_id):
+            try:
+                valuation_service.recalculate(conn, company_id, actor="system")
+            except (valuation_service.ValuationError, ValueError):
+                pass  # 数据暂时无法重算时保留上一份结果
+            row = valuation_repo.get_valuation(conn, company_id)
+        discount_rate = valuation_repo.get_discount_rate(conn, company_id)
+        settings = {
+            "growth_rates": (valuation_repo.get_growth_rates(conn, company_id)
+                             or valuation_repo.default_growth_rates()),
+            "discount_rate": (config.DCF_DEFAULTS["r"] if discount_rate is None else discount_rate),
+        }
+        base_context = {
+            "page": "valuation", "company": company,
+            "financial": valuation_service.is_financial(company),
+            "completeness": overview["stats"]["completeness"],
+            "settings": settings, "saved": saved, "error": error,
+            "default_growth_rates": config.DCF_DEFAULTS["growth_rates"],
+            "default_discount_rate": config.DCF_DEFAULTS["r"],
+            "growth_min": config.GROWTH_MIN, "growth_max": config.GROWTH_MAX,
+            "r_min": config.R_MIN, "r_max": config.R_MAX,
+        }
         if not row:
-            return _render(request, "valuation_empty.html", {
-                "page": "valuation", "company": company,
-                "financial": valuation_service.is_financial(company),
-                "completeness": overview["stats"]["completeness"],
-            })
-        data = valuation_service.valuation_view(conn, row["id"])
-    return _render(request, "valuation.html", {
-        "page": "valuation", "company": company,
-        "versions": [dict(v) for v in versions],
-        "financial": valuation_service.is_financial(company),
-        **data,
-    })
+            return _render(request, "valuation_empty.html", base_context)
+        data = valuation_service.valuation_view(conn, company_id)
+    return _render(request, "valuation.html", {**base_context, **data})
 
 
-@app.post("/valuations/{version_id}/confirm")
-def confirm_valuation(request: Request, version_id: int, next: str = Form("/")):
+@app.post("/companies/{company_id}/valuation/settings")
+async def save_valuation_settings(request: Request, company_id: int, reason: str = Form("")):
+    years = config.DCF_DEFAULTS["explicit_years"]
+    form = await request.form()
+    try:
+        numeric_rates = []
+        for year in range(1, years + 1):
+            raw = form.get(f"growth_rate_{year}")
+            if raw is None or str(raw).strip() == "":
+                raise ValueError(f"请填写第 {year} 年 FCF 增长率")
+            numeric_rates.append(float(raw) / 100)
+        raw_discount = form.get("discount_rate")
+        if raw_discount is None or str(raw_discount).strip() == "":
+            raise ValueError("请填写折现率")
+        discount_rate = float(raw_discount) / 100
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"参数格式不正确：{exc}") from exc
+    with connection.session() as conn:
+        if not company_repo.get_company(conn, company_id):
+            raise HTTPException(status_code=404, detail="企业不存在")
+        try:
+            valuation_repo.save_params(
+                conn, company_id,
+                growth_rates=numeric_rates,
+                discount_rate=discount_rate,
+            )
+            # 保存即按最新年度数据与最新参数重算，避免页面继续展示旧结果
+            valuation_service.recalculate(conn, company_id, note=reason.strip())
+        except (valuation_service.ValuationError, ValueError) as exc:
+            return RedirectResponse(
+                f"/companies/{company_id}/valuation?saved=1&error={quote(str(exc))}",
+                status_code=303,
+            )
+    return RedirectResponse(f"/companies/{company_id}/valuation?saved=1", status_code=303)
+
+
+@app.post("/companies/{company_id}/valuation/recalculate")
+def recalculate_valuation(request: Request, company_id: int):
     with connection.session() as conn:
         try:
-            valuation_service.confirm(conn, version_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return RedirectResponse(next, status_code=303)
+            valuation_service.recalculate(conn, company_id)
+        except (valuation_service.ValuationError, ValueError) as exc:
+            return RedirectResponse(
+                f"/companies/{company_id}/valuation?error={quote(str(exc))}",
+                status_code=303,
+            )
+    return RedirectResponse(f"/companies/{company_id}/valuation?saved=1", status_code=303)
 
 
 @app.get("/companies/{company_id}/lineage")
@@ -242,37 +291,3 @@ def metrics_page(request: Request):
         groups = query_service.metric_dictionary(conn)
     return _render(request, "metrics.html", {"page": "metrics", "groups": groups})
 
-
-@app.get("/discount-rates")
-def discount_rates_page(request: Request):
-    with connection.session() as conn:
-        data = query_service.discount_rate_page(conn)
-    return _render(request, "discount_rates.html", {"page": "rates", **data})
-
-
-@app.post("/discount-rates")
-def discount_rate_add(
-    request: Request, scope: str = Form(...), rate: str = Form(...),
-    industry_tag: str = Form(""), company_id: str = Form(""), reason: str = Form(""),
-):
-    try:
-        numeric = float(rate)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="折现率必须是数字（如 0.10）") from exc
-    with connection.session() as conn:
-        try:
-            valuation_repo.create_config(
-                conn,
-                scope_level=scope,
-                rate=numeric,
-                industry_tag=industry_tag or None,
-                company_id=int(company_id) if company_id else None,
-                reason=reason or "页面配置",
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if company_id:
-            valuation_service.mark_pending_after_upstream_change(
-                conn, int(company_id), "折现率配置变更"
-            )
-    return RedirectResponse("/discount-rates", status_code=303)

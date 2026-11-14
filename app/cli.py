@@ -24,7 +24,6 @@ from app.db.repositories import audit
 from app.db.repositories import companies as company_repo
 from app.db.repositories import metrics as metric_repo
 from app.db.repositories import reports as report_repo
-from app.db.repositories import valuations as valuation_repo
 from app.domain.metrics_catalog import METRICS
 from app.services import (
     acquire_service,
@@ -52,9 +51,8 @@ def cmd_init(args) -> None:
     connection.init_db()
     with connection.session() as conn:
         inserted = metric_repo.seed_metrics(conn)
-        seeded = valuation_repo.ensure_default_config(conn)
     print(f"数据库已初始化：{config.DB_PATH}")
-    print(f"指标字典：新增 {inserted} 项，共 {len(METRICS)} 项；折现率默认配置：{'已写入' if seeded else '已存在'}")
+    print(f"指标字典：新增 {inserted} 项，共 {len(METRICS)} 项")
 
 
 def cmd_company_add(args) -> None:
@@ -79,7 +77,7 @@ def cmd_list(args) -> None:
             print(f"[{company['id']}] {company['name']}（{company['market']}·{company['code'] or '—'}）"
                   f" 报告期 {stats['period_count']}｜待确认 {stats['pending']}｜"
                   f"报告 {('v' + str(stats['report']['version_no'])) if stats['report'] else '—'}｜"
-                  f"估值 {('V' + str(stats['valuation']['version_no'])) if stats['valuation'] else '—'}")
+                  f"估值 {'已出' if stats['valuation'] else '—'}")
 
 
 def cmd_ingest(args) -> None:
@@ -206,7 +204,7 @@ def cmd_confirm(args) -> None:
 def cmd_override(args) -> None:
     with connection.session() as conn:
         new_id = metric_service.override_value(conn, args.value_id, args.value, args.reason)
-        print(f"已改值，新指标值 id={new_id}（旧值保留；下游估值已转待复核）")
+        print(f"已改值，新指标值 id={new_id}（旧值保留；估值页下次打开时按最新数据自动重算）")
 
 
 def cmd_dispute(args) -> None:
@@ -245,17 +243,17 @@ def cmd_value(args) -> None:
         _get_company(conn, args.company)
         try:
             result = valuation_service.run_valuation(
-                conn, args.company, scheme=args.scheme, base_method=args.base,
-                g1=args.g1, g2=args.g2, g=args.g, r_override=args.r,
+                conn, args.company, base_method=args.base,
+                g=args.g,
                 market_cap=args.market_cap, market_cap_date=args.market_cap_date,
-                shares=args.shares, snapshot_id=args.snapshot_id,
+                shares=args.shares,
             )
         except (valuation_service.ValuationError, ValueError) as exc:
             print(f"估值失败：{exc}")
             sys.exit(1)
         params = result["params"]
-        print(f"估值 V{result['version_no']}（id={result['version_id']}）｜快照 {result['snapshot']}｜"
-              f"r={params['r']:.2%}（{valuation_service.R_LEVEL_LABELS.get(params['r_source'])}）")
+        print(f"估值已更新（id={result['valuation_id']}）｜快照 {result['snapshot']}｜"
+              f"基准 {result['base_period_label']}｜r={params['r']:.2%}")
         print(f"  基准 FCF（{params['base_method']}）= {_fmt_yi(result['base_fcf'])}")
         print(f"  企业价值 = {_fmt_yi(result['enterprise_value'])}")
         print(f"  净现金 = {_fmt_yi(result['net_cash']['cash'])} + 交易性金融资产 "
@@ -265,30 +263,6 @@ def cmd_value(args) -> None:
               + (f"｜每股 {result['per_share_value']:,.2f} 元" if result['per_share_value'] else ""))
         if result["applicability_note"]:
             print(f"  说明：{result['applicability_note']}")
-        if args.confirm:
-            valuation_service.confirm(conn, result["version_id"])
-            print("  已确认该估值版本")
-
-
-def cmd_confirm_value(args) -> None:
-    with connection.session() as conn:
-        valuation_service.confirm(conn, args.version_id)
-    print(f"估值版本 #{args.version_id} 已确认")
-
-
-def cmd_rate_add(args) -> None:
-    with connection.session() as conn:
-        try:
-            valuation_repo.create_config(
-                conn, scope_level=args.scope, rate=args.rate,
-                industry_tag=args.industry_tag, company_id=args.company,
-                reason=args.reason or "",
-            )
-        except ValueError as exc:
-            print(str(exc))
-            sys.exit(1)
-        count = valuation_service.mark_pending_after_upstream_change(conn, args.company, "折现率配置变更") if args.company else 0
-    print(f"已新增折现率配置：{args.scope} {args.rate:.2%}" + (f"；{count} 个估值版本转待复核" if count else ""))
 
 
 def cmd_serve(args) -> None:
@@ -396,33 +370,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--company", type=int, required=True)
     p.set_defaults(func=cmd_report)
 
-    p = sub.add_parser("value", help="运行 DCF 估值")
+    p = sub.add_parser("value", help="运行 DCF 估值（单份结果，按最新年度数据原地更新）")
     p.add_argument("--company", type=int, required=True)
-    p.add_argument("--scheme", default="中性")
     p.add_argument("--base", default=config.DCF_DEFAULTS["base_method"],
                    choices=["1y", "avg3", "avg5", "avg7"])
-    p.add_argument("--g1", type=float)
-    p.add_argument("--g2", type=float)
     p.add_argument("--g", type=float)
-    p.add_argument("--r", type=float)
     p.add_argument("--market-cap", type=float)
     p.add_argument("--market-cap-date")
     p.add_argument("--shares", type=float)
-    p.add_argument("--snapshot-id", type=int)
-    p.add_argument("--confirm", action="store_true")
     p.set_defaults(func=cmd_value)
-
-    p = sub.add_parser("confirm-value", help="确认估值版本")
-    p.add_argument("--version-id", type=int, required=True)
-    p.set_defaults(func=cmd_confirm_value)
-
-    p = sub.add_parser("rate-add", help="新增折现率配置")
-    p.add_argument("--scope", required=True, choices=["global", "industry", "company"])
-    p.add_argument("--rate", type=float, required=True)
-    p.add_argument("--industry-tag")
-    p.add_argument("--company", type=int)
-    p.add_argument("--reason")
-    p.set_defaults(func=cmd_rate_add)
 
     p = sub.add_parser("report-export", help="把旧版库内报告正文导出为 Markdown 文件")
     p.set_defaults(func=cmd_report_export)

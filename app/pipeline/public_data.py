@@ -1,11 +1,15 @@
 """免费公开数据源（无需 access token）。
 
 当前接入：
-- A 股：东方财富 F10「主要指标」与数据中心「现金流量表」公开接口；
+- A 股：东方财富 F10「主要指标」、数据中心「利润表」「现金流量表」「资产负债表」公开接口；
 - 港股/美股/非上市：暂不接入，明确报错，避免伪造数据。
 
-定位：与年报/季报下载并行执行，先把网上公开的营收、利润、毛利率、经营现金流等
-写进指标库（状态 pending，仍需人工确认），再与披露文件抽取互相校验。
+定位：与年报/季报下载并行执行，先把网上公开的营收、利润、毛利率、经营现金流、
+完整三表科目写进指标库（状态 pending，仍需人工确认），再与披露文件抽取互相校验。
+
+季报数据尤其依赖这里的完整三表：F10「主要指标」按季度只提供营收/归母/扣非/毛利率
+四项，其余科目（成本费用、资产负债、现金流明细）必须从利润表、资产负债表、现金流
+量表接口补齐。
 """
 
 from __future__ import annotations
@@ -38,6 +42,52 @@ CASH_FIELDS = {
     "NETCASH_INVEST": ("investing_cf", "元", 1.0),
     "NETCASH_FINANCE": ("financing_cf", "元", 1.0),
     "CCE_ADD": ("net_cash_increase", "元", 1.0),
+}
+# 完整现金流量表（F10）比摘要多「汇率变动影响」，并覆盖季度明细
+FULL_CASH_FIELDS = {
+    **CASH_FIELDS,
+    "RATE_CHANGE_EFFECT": ("fx_effect", "元", 1.0),
+}
+INCOME_FIELDS = {
+    "TOTAL_OPERATE_INCOME": ("revenue", "元", 1.0),
+    "OPERATE_INCOME": ("revenue", "元", 1.0),
+    "OPERATE_COST": ("operating_cost", "元", 1.0),
+    "SALE_EXPENSE": ("selling_expense", "元", 1.0),
+    "MANAGE_EXPENSE": ("admin_expense", "元", 1.0),
+    "RESEARCH_EXPENSE": ("rnd_expense", "元", 1.0),
+    "FINANCE_EXPENSE": ("finance_expense", "元", 1.0),
+    "NETPROFIT": ("net_profit", "元", 1.0),
+    "PARENT_NETPROFIT": ("net_profit_parent", "元", 1.0),
+    "DEDUCT_PARENT_NETPROFIT": ("net_profit_deducted", "元", 1.0),
+}
+BALANCE_FIELDS = {
+    "MONETARYFUNDS": ("cash", "元", 1.0),
+    "TRADE_FINASSET": ("trading_fin_assets", "元", 1.0),
+    "NOTE_ACCOUNTS_RECE": ("receivables", "元", 1.0),
+    "PREPAYMENT": ("prepayments", "元", 1.0),
+    "INVENTORY": ("inventory", "元", 1.0),
+    "TOTAL_CURRENT_ASSETS": ("current_assets_total", "元", 1.0),
+    "FIXED_ASSET": ("fixed_assets", "元", 1.0),
+    "CIP": ("construction_in_progress", "元", 1.0),
+    "INTANGIBLE_ASSET": ("intangible_assets", "元", 1.0),
+    "DEVELOPMENT_EXPENSE": ("development_expenditure", "元", 1.0),
+    "GOODWILL": ("goodwill", "元", 1.0),
+    "LONG_EQUITY_INVEST": ("long_term_equity_invest", "元", 1.0),
+    "TOTAL_NONCURRENT_ASSETS": ("non_current_assets_total", "元", 1.0),
+    "TOTAL_ASSETS": ("total_assets", "元", 1.0),
+    "SHORT_LOAN": ("short_term_borrowings", "元", 1.0),
+    "NOTE_ACCOUNTS_PAYABLE": ("payables", "元", 1.0),
+    "CONTRACT_LIAB": ("contract_liabilities", "元", 1.0),
+    "PAYROLL_PAYABLE": ("payroll_payable", "元", 1.0),
+    "TAX_PAYABLE": ("taxes_payable", "元", 1.0),
+    "NONCURRENT_LIAB_1YEAR": ("current_portion_lt_debt", "元", 1.0),
+    "TOTAL_CURRENT_LIAB": ("current_liabilities_total", "元", 1.0),
+    "LONG_LOAN": ("long_term_borrowings", "元", 1.0),
+    "BOND_PAYABLE": ("bonds_payable", "元", 1.0),
+    "TOTAL_NONCURRENT_LIAB": ("non_current_liabilities_total", "元", 1.0),
+    "TOTAL_LIABILITIES": ("total_liabilities", "元", 1.0),
+    "TOTAL_EQUITY": ("total_equity", "元", 1.0),
+    "SHARE_CAPITAL": ("share_capital", "元", 1.0),
 }
 PERIOD_LABEL = {"annual": "年报", "h1": "中报", "q1": "一季报", "q3": "三季报"}
 
@@ -136,6 +186,66 @@ def _request_json(conn, session: requests.Session, *, company_id: int, url: str,
     raise PublicDataError(f"公开数据接口请求失败：{url}（{last_error}）")
 
 
+def _fetch_report_rows(conn, session: requests.Session, *, company, report_name: str) -> list[dict[str, Any]]:
+    """拉取东方财富数据中心的三大报表分页数据。"""
+    data = _request_json(
+        conn, session, company_id=company["id"], url=EASTMONEY_CASH_URL,
+        params={
+            "reportName": report_name,
+            "columns": "ALL",
+            "filter": f'(SECURITY_CODE="{company["code"]}")',
+            "pageNumber": 1,
+            "pageSize": 100,
+            "sortColumns": "REPORT_DATE",
+            "sortTypes": -1,
+            "source": "WEB",
+            "client": "WEB",
+        },
+    )
+    if isinstance(data, dict) and data.get("success"):
+        return (data.get("result") or {}).get("data") or []
+    return []
+
+
+def _dedupe_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """同一指标同一报告期只保留首次出现的值（优先 KPI 接口，其次完整报表）。"""
+    seen: set[tuple[str, str, int]] = set()
+    result: list[dict[str, Any]] = []
+    for item in items:
+        key = (item["metric_code"], item["period_type"], item["fiscal_year"])
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def _fill_gross_margin(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """公开接口只对部分报告期给出毛利率，缺失的按 (营收-营业成本)/营收 推算补齐。"""
+    have = {(i["metric_code"], i["period_type"], i["fiscal_year"]) for i in items}
+    revenue = {(i["period_type"], i["fiscal_year"]): i for i in items if i["metric_code"] == "revenue"}
+    cost = {(i["period_type"], i["fiscal_year"]): i for i in items if i["metric_code"] == "operating_cost"}
+    for key, rev in revenue.items():
+        if ("gross_margin", *key) in have or key not in cost:
+            continue
+        if not rev["value"] or cost[key]["value"] is None:
+            continue
+        margin = 1 - cost[key]["value"] / rev["value"]
+        items.append({
+            "metric_code": "gross_margin",
+            "period_type": key[0],
+            "fiscal_year": key[1],
+            "value": margin,
+            "unit": "ratio",
+            "raw_value": round(margin * 100, 4),
+            "raw_unit": "%",
+            "is_derived": True,
+            "derived_from": {"revenue": rev["value"], "operating_cost": cost[key]["value"]},
+            "caliber_note": "公开数据推算：毛利率 = 1 - 营业成本 / 营业收入（待与披露文件交叉校验）",
+        })
+    return items
+
+
 def eastmoney_code(company) -> str:
     code = (company["code"] or "").strip()
     if not code:
@@ -170,27 +280,26 @@ def fetch_public_metrics(conn, company, *, years: int = 5) -> dict[str, Any]:
     )
     quarterly_rows.extend((data or {}).get("data") or [])
 
-    cash_rows: list[dict[str, Any]] = []
-    cash_data = _request_json(
-        conn, session, company_id=company["id"], url=EASTMONEY_CASH_URL,
-        params={
-            "reportName": "RPT_DMSK_FN_CASHFLOW",
-            "columns": "ALL",
-            "filter": f'(SECURITY_CODE="{company["code"]}")',
-            "pageNumber": 1,
-            "pageSize": 60,
-            "sortColumns": "REPORT_DATE",
-            "sortTypes": -1,
-            "source": "WEB",
-            "client": "WEB",
-        },
+    cash_rows = _fetch_report_rows(
+        conn, session, company=company, report_name="RPT_DMSK_FN_CASHFLOW"
     )
-    if isinstance(cash_data, dict) and cash_data.get("success"):
-        cash_rows = (cash_data.get("result") or {}).get("data") or []
+    income_rows = _fetch_report_rows(
+        conn, session, company=company, report_name="RPT_F10_FINANCE_GINCOME"
+    )
+    full_cash_rows = _fetch_report_rows(
+        conn, session, company=company, report_name="RPT_F10_FINANCE_GCASHFLOW"
+    )
+    balance_rows = _fetch_report_rows(
+        conn, session, company=company, report_name="RPT_F10_FINANCE_GBALANCE"
+    )
 
     items = parse_rows(annual_rows, KPI_FIELDS, report_type_field="REPORT_TYPE")
     items += parse_rows(quarterly_rows, KPI_FIELDS, report_type_field="REPORT_TYPE")
+    items += parse_rows(income_rows, INCOME_FIELDS)
+    items += parse_rows(full_cash_rows, FULL_CASH_FIELDS)
     items += parse_rows(cash_rows, CASH_FIELDS)
+    items += parse_rows(balance_rows, BALANCE_FIELDS)
+    items = _fill_gross_margin(_dedupe_items(items))
 
     cutoff = date.today().year - years + 1
     items = [item for item in items if item["fiscal_year"] >= cutoff]
@@ -218,7 +327,10 @@ def fetch_public_metrics(conn, company, *, years: int = 5) -> dict[str, Any]:
             raw_value=item["raw_value"],
             raw_unit=item["raw_unit"],
             raw_currency="CNY",
-            caliber_note="公开数据源：东方财富公开接口（免 token），待与披露文件交叉校验",
+            caliber_note=item.get("caliber_note")
+            or "公开数据源：东方财富公开接口（免 token），待与披露文件交叉校验",
+            is_derived=item.get("is_derived", False),
+            derived_from=item.get("derived_from"),
         )
         if action == "inserted":
             counters["inserted"] += 1

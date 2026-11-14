@@ -79,7 +79,6 @@ def test_incremental_new_period_keeps_old_versions(db, tmp_path):
     valuation = valuation_service.run_valuation(
         db, company_id, shares=1_000_000_000, market_cap=200e8, market_cap_date="2026-11-01"
     )
-    valuation_service.confirm(db, valuation["version_id"])
 
     # 同一企业新增一期（2025 年报，文件同时含历史列）
     second = build_workbook(tmp_path / "v2.xlsx", [2021, 2022, 2023, 2024, 2025])
@@ -108,9 +107,12 @@ def test_incremental_new_period_keeps_old_versions(db, tmp_path):
     old_sections = json.dumps(old_view["sections"], ensure_ascii=False, default=str)
     assert "2025年报" not in old_sections
 
-    # 上游快照变化后，已确认估值转待复核（不自动改数）
-    refreshed = valuation_repo.get_version(db, valuation["version_id"])
-    assert refreshed["status"] == "pending_review"
+    # 估值没有版本概念：新年度数据生成新快照后，重算原地更新同一份结果
+    valuation_service.recalculate(db, company_id)
+    updated = valuation_repo.get_valuation(db, company_id)
+    assert updated["id"] == valuation["valuation_id"]
+    assert updated["based_on_snapshot_id"] == snap2
+    assert db.execute("SELECT COUNT(*) AS n FROM valuations").fetchone()["n"] == 1
 
     assert report_repo.get_version(db, v2["version_id"])["status"] == "published"
     assert report_repo.get_version(db, v1["version_id"])["status"] == "archived"
@@ -131,18 +133,17 @@ def test_new_company_isolated(db, tmp_path):
         _create_company(db, name="甲公司", code="600001")
 
 
-def test_override_creates_version_and_invalidates_valuation(db, tmp_path):
+def test_override_creates_metric_version(db, tmp_path):
     company_id = _create_company(db)
     _ingest_and_confirm(db, company_id, build_workbook(tmp_path / "x.xlsx", [2021, 2022, 2023, 2024]))
     valuation = valuation_service.run_valuation(
         db, company_id, shares=1_000_000_000, market_cap=200e8, market_cap_date="2026-11-01"
     )
-    valuation_service.confirm(db, valuation["version_id"])
 
     latest_period = company_repo.list_periods(db, company_id, annual_only=True)[-1]
     ocf_metric = metric_repo.get_metric(db, "ocf")
     old = metric_repo.current_value(db, company_id, latest_period["id"], ocf_metric["id"])
-    assert old["status"] == "locked"
+    assert old["status"] == "confirmed"
 
     new_id = metric_service.override_value(db, old["id"], old["value"] * 1.05, "口径更正")
     new = metric_repo.get_value(db, new_id)
@@ -150,7 +151,10 @@ def test_override_creates_version_and_invalidates_valuation(db, tmp_path):
     assert new["is_current"] == 1
     assert metric_repo.get_value(db, old["id"])["is_current"] == 0
 
-    assert valuation_repo.get_version(db, valuation["version_id"])["status"] == "pending_review"
+    # 改值不会复制估值：仍只有同一份结果，待下次重算/新快照时刷新
+    current = valuation_repo.get_valuation(db, company_id)
+    assert current["id"] == valuation["valuation_id"]
+    assert db.execute("SELECT COUNT(*) AS n FROM valuations").fetchone()["n"] == 1
 
 
 def test_financial_company_disabled(db, tmp_path):
@@ -176,40 +180,50 @@ def test_missing_net_cash_blocks_equity_value(db, tmp_path):
     assert "禁止" in result["applicability_note"]
 
 
-def test_discount_rate_priority_and_dcf_math(db, tmp_path):
+def test_dcf_math_with_growth_rates_and_rate(db, tmp_path):
     company_id = _create_company(db)
     _ingest_and_confirm(db, company_id, build_workbook(tmp_path / "x.xlsx", [2021, 2022, 2023, 2024]))
-
-    valuation_repo.create_config(db, scope_level="industry", industry_tag="医疗器械", rate=0.09)
-    valuation_repo.create_config(db, scope_level="company", company_id=company_id, rate=0.11)
-    company = company_repo.get_company(db, company_id)
-    resolved = valuation_repo.resolve_rate(db, company)
-    assert resolved["rate"] == 0.11 and resolved["level"] == "company"
 
     result = valuation_service.run_valuation(
         db, company_id, base_method="1y", market_cap=200e8, shares=1_000_000_000,
         market_cap_date="2026-11-01",
     )
-    assert result["params"]["r"] == 0.11
-    assert result["params"]["r_source"] == "company"
+    assert result["params"]["r"] == 0.10  # 默认折现率 10%
+    assert result["params"]["growth_rates"] == [0.10] * 5 + [0.05] * 5
+    assert "r_source" not in result["params"]
 
-    # 独立复算 DCF：1 年基准 FCF + 10 年分段增长 + 永续
+    # 独立复算 DCF：1 年基准 FCF + 逐年增长率 + 永续
     annual = metric_service.snapshot_series(db, snapshot_repo.latest_snapshot(db, company_id), "annual")
     base = annual[-1]["values"]["ocf"] - annual[-1]["values"]["capex"]
     assert result["base_fcf"] == pytest.approx(base)
-    r, g1, g2, g = 0.11, 0.10, 0.05, 0.03
+    r, rates, g = 0.10, [0.10] * 5 + [0.05] * 5, 0.03
     fcf = base
     pv = 0.0
     for year in range(1, 11):
-        fcf *= 1 + (g1 if year <= 5 else g2)
+        fcf *= 1 + rates[year - 1]
         pv += fcf / (1 + r) ** year
     terminal = fcf * (1 + g) / (r - g) / (1 + r) ** 10
     expected_ev = pv + terminal
     assert result["enterprise_value"] == pytest.approx(expected_ev, rel=1e-9)
 
-    override = valuation_service.run_valuation(db, company_id, r_override=0.12, shares=1_000_000_000)
-    assert override["params"]["r"] == 0.12
-    assert override["params"]["r_source"] == "override"
+    # 折现率与增长率参与 DCF：保存参数后估值随之变化
+    valuation_repo.save_params(
+        db, company_id, growth_rates=[0.03] * 10, discount_rate=0.12
+    )
+    changed = valuation_service.recalculate(db, company_id)
+    assert changed["params"]["r"] == pytest.approx(0.12)
+    assert changed["enterprise_value"] != pytest.approx(result["enterprise_value"])
+    fcf, pv = base, 0.0
+    for year in range(1, 11):
+        fcf *= 1.03
+        pv += fcf / (1.12 ** year)
+    assert changed["enterprise_value"] == pytest.approx(
+        pv + fcf * (1 + g) / (0.12 - g) / (1.12 ** 10), rel=1e-9
+    )
+
+    # 重算不会产生第二份结果
+    valuation_service.recalculate(db, company_id)
+    assert db.execute("SELECT COUNT(*) AS n FROM valuations").fetchone()["n"] == 1
 
 
 def test_csv_import_channel(db, tmp_path):

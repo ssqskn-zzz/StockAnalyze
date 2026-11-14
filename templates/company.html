@@ -64,12 +64,12 @@
       <tr><th>估值必需数据完整度</th><td>{{ '%.0f%%'|format(stats.completeness.ratio * 100) }}（{{ stats.completeness.ok }}/{{ stats.completeness.total }}）</td></tr>
       <tr><th>最近数据快照</th><td>{% if snapshot %}{{ snapshot.code }} · {{ snapshot.created_at }}{% else %}—{% endif %}</td></tr>
       <tr><th>最近报告</th><td>{% if report %}<a href="/companies/{{ company.id }}/reports?version={{ report.version_no }}">v{{ report.version_no }}</a> · {{ report.status }}{% else %}—{% endif %}</td></tr>
-      <tr><th>最近估值</th><td>{% if valuation %}<a href="/companies/{{ company.id }}/valuation?version_id={{ valuation.id }}">V{{ valuation.version_no }} · {{ valuation.scheme }}</a> · {{ valuation.status }}{% else %}—{% endif %}</td></tr>
+      <tr><th>最近估值</th><td>{% if valuation %}<a href="/companies/{{ company.id }}/valuation">{% if valuation.per_share_value %}{{ '%.2f'|format(valuation.per_share_value) }} 元/股{% else %}DCF 估值{% endif %}</a> · {{ valuation.updated_at }}{% else %}—{% endif %}</td></tr>
     </table>
   </div>
 
   <div class="card">
-    <div class="card-head"><h2>报告期</h2><span class="small muted">按时间升序</span></div>
+    <div class="card-head"><h2>报告期</h2><span class="small muted">按时间倒序</span></div>
     <div class="tag-list">
       {% for p in periods %}
       <span class="chip">{{ p.fiscal_year }}{% if p.period_type == 'annual' %}年报{% elif p.period_type == 'h1' %}半年报{% elif p.period_type == 'q1' %}一季报{% else %}三季报{% endif %}</span>

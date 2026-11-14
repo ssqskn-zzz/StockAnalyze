@@ -9,7 +9,7 @@
       <span class="muted" style="font-size: 13px; font-weight: 400;">v{{ version.version_no }}</span>
     </h1>
     <p class="muted">
-      报告期 {{ version.coverage_label }} ｜ 基于快照 #{{ version.based_on_snapshot_id }} ｜ 生成于 {{ version.generated_at }}
+      报告期 {{ version.coverage_label }} ｜ {% if version.based_on_snapshot_id %}基于快照 #{{ version.based_on_snapshot_id }}{% else %}外部文章整理{% endif %} ｜ 生成于 {{ version.generated_at }}
     </p>
     <div class="actions">
       {% for v in versions %}
@@ -43,10 +43,10 @@
     <table>
       <tbody>
         <tr><th>覆盖报告期</th><td>{{ version.coverage_label }}</td></tr>
-        <tr><th>数据快照</th><td>#{{ version.based_on_snapshot_id }}</td></tr>
+        <tr><th>数据快照</th><td>{% if version.based_on_snapshot_id %}#{{ version.based_on_snapshot_id }}{% else %}无（外部文章）{% endif %}</td></tr>
         <tr><th>生成时间</th><td>{{ version.generated_at }}</td></tr>
         {% if version.published_at %}<tr><th>发布时间</th><td>{{ version.published_at }}</td></tr>{% endif %}
-        <tr><th>估值数据完整度</th><td>{{ '%.0f%%'|format(completeness.ratio * 100) }}（{{ completeness.ok }}/{{ completeness.total }}）</td></tr>
+        {% if completeness.total %}<tr><th>估值数据完整度</th><td>{{ '%.0f%%'|format(completeness.ratio * 100) }}（{{ completeness.ok }}/{{ completeness.total }}）</td></tr>{% endif %}
         {% if version.file_path %}<tr><th>正文文件</th><td class="small muted">{{ version.file_path }}</td></tr>{% endif %}
       </tbody>
     </table>

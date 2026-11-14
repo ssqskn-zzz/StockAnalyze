@@ -210,29 +210,23 @@ CREATE TABLE IF NOT EXISTS section_changes (
     new_text         TEXT
 );
 
-CREATE TABLE IF NOT EXISTS valuation_models (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    company_id  INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-    method      TEXT    NOT NULL DEFAULT 'A' CHECK (method IN ('A', 'B')),
-    scheme      TEXT    NOT NULL DEFAULT '中性',
-    enabled     INTEGER NOT NULL DEFAULT 1,
-    created_at  TEXT    NOT NULL,
-    UNIQUE (company_id, method, scheme)
+CREATE TABLE IF NOT EXISTS valuation_params (
+    company_id       INTEGER PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
+    growth_rates     TEXT    NOT NULL,               -- JSON: 未来 10 年逐年 FCF 增长率
+    discount_rate    REAL    NOT NULL DEFAULT 0.1,   -- 折现率 r
+    updated_at       TEXT    NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS valuation_versions (
+-- 每家企业只保留一份 DCF 估值结果，始终以最新年报/最新快照为准
+CREATE TABLE IF NOT EXISTS valuations (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-    model_id             INTEGER NOT NULL REFERENCES valuation_models(id) ON DELETE CASCADE,
-    company_id           INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-    version_no           INTEGER NOT NULL,
-    scheme               TEXT    NOT NULL,
-    method               TEXT    NOT NULL DEFAULT 'A',
+    company_id           INTEGER NOT NULL UNIQUE REFERENCES companies(id) ON DELETE CASCADE,
     based_on_snapshot_id INTEGER REFERENCES snapshots(id),
     base_period_id       INTEGER REFERENCES periods(id),
     base_fcf_method      TEXT    NOT NULL,
     base_fcf_value       REAL,
     fcf_detail           TEXT,                       -- JSON: [{year, fcf, ocf, capex}]
-    params               TEXT    NOT NULL,           -- JSON: g1/g2/g/r/n/r_source/config_version
+    params               TEXT    NOT NULL,           -- JSON: model/base_method/n/g/r/growth_rates
     projection           TEXT,                       -- JSON: [{year, fcf, factor, pv}]
     net_cash             TEXT,                       -- JSON: 明细
     shares               REAL,
@@ -248,34 +242,13 @@ CREATE TABLE IF NOT EXISTS valuation_versions (
     applicability_note   TEXT,
     sensitivity          TEXT,                       -- JSON
     input_values         TEXT,                       -- JSON: [{code, value_id, value, version_no, status}]
-    status               TEXT    NOT NULL DEFAULT 'draft'
-                         CHECK (status IN ('draft', 'pending_confirm', 'confirmed', 'pending_review', 'archived')),
-    status_reason        TEXT,
     created_at           TEXT    NOT NULL,
-    confirmed_at         TEXT,
-    confirmed_by         TEXT
+    updated_at           TEXT    NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS ux_valuation_version_no
-    ON valuation_versions (model_id, version_no);
-
-CREATE TABLE IF NOT EXISTS discount_rate_configs (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    scope_level    TEXT    NOT NULL CHECK (scope_level IN ('global', 'industry', 'company', 'override')),
-    industry_tag   TEXT,
-    company_id     INTEGER REFERENCES companies(id) ON DELETE CASCADE,
-    rate           REAL    NOT NULL,
-    effective_from TEXT    NOT NULL,
-    config_version INTEGER NOT NULL,
-    changed_by     TEXT    NOT NULL DEFAULT 'user',
-    reason         TEXT,
-    created_at     TEXT    NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ix_discount_rate_scope
-    ON discount_rate_configs (scope_level, industry_tag, company_id, config_version);
 
 CREATE TABLE IF NOT EXISTS review_records (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    object_type TEXT    NOT NULL,                   -- metric_value / report_section / valuation_version / snapshot
+    object_type TEXT    NOT NULL,                   -- metric_value / report_section / valuation / snapshot
     object_id   INTEGER NOT NULL,
     action      TEXT    NOT NULL,
     old_value   TEXT,

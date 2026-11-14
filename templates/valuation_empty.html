@@ -7,9 +7,54 @@
   <h2>该企业不适用自由现金流估值</h2>
   <p>银行 / 保险 / 证券 / 信托类企业的经营现金流不反映股东可分配现金，口径 A 已禁用。可保留数据与报告，估值模块不出数。</p>
   {% else %}
-  <h2>还没有估值版本</h2>
-  <p>估值基于已确认数据快照计算。当前估值必需指标完整度：{{ '%.0f%%'|format(completeness.ratio * 100) }}（{{ completeness.ok }}/{{ completeness.total }}）。</p>
-  <pre><code>python -m app.cli value --company {{ company.id }} --base avg5 --market-cap 100000000000 --shares 1000000000</code></pre>
+  <h2>还没有估值结果</h2>
+  <p>估值基于最新数据快照计算，并以最新年报为准。当前估值必需指标完整度：{{ '%.0f%%'|format(completeness.ratio * 100) }}（{{ completeness.ok }}/{{ completeness.total }}）。</p>
+  <p class="small muted">可先在下方保存本企业的折现率与未来 10 年 FCF 增长率，保存后自动按最新年度数据生成估值；也可用命令行：
+    <code>python -m app.cli value --company {{ company.id }} --base avg5 --market-cap 100000000000 --shares 1000000000</code>
+  </p>
   {% endif %}
 </div>
+
+{% if not financial %}
+<div class="card">
+  <div class="card-head"><h2>企业估值参数</h2><span class="small muted">每企业只保留一份，保存后立即按最新年度数据重算</span></div>
+  <form method="post" action="/companies/{{ company.id }}/valuation/settings">
+    <div class="form-row">
+      <div style="flex: 0 0 140px; min-width: 120px;">
+        <label>折现率 r（%）</label>
+        <input type="number" step="0.01" name="discount_rate" value="{{ '%.2f'|format(settings.discount_rate * 100) }}" required>
+      </div>
+      <div style="flex: 2; min-width: 220px;">
+        <label>变更原因（可选）</label>
+        <input type="text" name="reason" placeholder="如：按年报披露的确定性下调增长率/折现率">
+      </div>
+    </div>
+    <div class="form-row" style="margin-top: 4px;">
+      {% for i in range(1, 11) %}
+      <div style="flex: 0 0 92px; min-width: 86px;">
+        <label>第{{ i }}年 FCF 增长率（%）</label>
+        <input type="number" step="0.01" name="growth_rate_{{ i }}" value="{{ '%.2f'|format(settings.growth_rates[i-1] * 100) }}" required>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="form-row" style="margin-top: 10px;">
+      <div><button class="btn" type="submit">保存并重算</button></div>
+    </div>
+  </form>
+  <p class="small muted" style="margin-top: 8px;">
+    折现率 r 与未来 10 年逐年 <b>FCF 增长率</b>都直接参与 DCF。
+    折现率允许 {{ '%.0f%%'|format(r_min * 100) }}–{{ '%.0f%%'|format(r_max * 100) }}（默认 {{ '%.0f%%'|format(default_discount_rate * 100) }}）；
+    增长率允许 {{ '%.0f%%'|format(growth_min * 100) }}–{{ '%.0f%%'|format(growth_max * 100) }}，
+    默认前 5 年 {{ '%.0f%%'|format(default_growth_rates[0] * 100) }}、后 5 年 {{ '%.0f%%'|format(default_growth_rates[9] * 100) }}。
+  </p>
+  {% if saved %}<div class="callout good small">已保存并重算。</div>{% endif %}
+  {% if error %}<div class="callout danger small">{{ error }}</div>{% endif %}
+  <form class="form-row" method="post" action="/companies/{{ company.id }}/valuation/recalculate">
+    <div><button class="btn" type="submit">重新计算</button></div>
+    <span class="small muted">按最新快照/年报与已保存参数生成估值结果。</span>
+  </form>
+</div>
+{% endif %}
+
+{% include "_valuation_notes.html" %}
 {% endblock %}

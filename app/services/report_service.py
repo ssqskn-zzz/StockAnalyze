@@ -102,7 +102,7 @@ def _write_version_markdown(company, *, version_no: int, snapshot_code: str,
         company, snapshot_code=snapshot_code, version_no=version_no, coverage=coverage_labels,
     )
     saved, sha = report_files.write_report(path, content)
-    return {"file_path": str(saved), "content_hash": sha}
+    return {"file_path": report_files.stored_path(saved), "content_hash": sha}
 
 
 def generate_report(
@@ -130,7 +130,7 @@ def generate_report(
     quarterly.sort(key=lambda x: (x["period"]["year"], x["period"]["type"]))
     segments = _segments_from_snapshot(conn, snapshot)
     peers = _peer_rows(conn, company)
-    valuation = valuation_repo.latest_usable(conn, company_id)
+    valuation = valuation_repo.get_valuation(conn, company_id)
 
     coverage = snapshot_repo.snapshot_coverage(conn, snapshot)
     coverage_labels = [period_label(c["period_type"], c["fiscal_year"]) for c in coverage]

@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.db.repositories import companies as company_repo
+from app.db.repositories import valuations as valuation_repo
 from app.services import ingestion_service, metric_service, report_service, valuation_service
 from app.web.app import app
 from tests.conftest import build_workbook
@@ -29,7 +30,7 @@ def _seed_company(db, tmp_path, name="测试医疗", code="600000"):
 
 
 def test_empty_pages_render(client):
-    for path in ("/", "/processing", "/metrics", "/discount-rates"):
+    for path in ("/", "/processing", "/metrics"):
         response = client.get(path)
         assert response.status_code == 200, path
         assert "价值投资工作台" in response.text
@@ -109,9 +110,9 @@ def test_pending_bulk_confirm_via_web(client, db, tmp_path):
     assert all(status == "confirmed" for status in statuses.values())
 
 
-def test_valuation_page_and_confirm_via_web(client, db, tmp_path):
+def test_valuation_page_renders_single_result(client, db, tmp_path):
     company_id = _seed_company(db, tmp_path)
-    valuation = valuation_service.run_valuation(
+    valuation_service.run_valuation(
         db, company_id, shares=1_000_000_000, market_cap=200e8, market_cap_date="2026-11-01"
     )
     db.commit()
@@ -119,14 +120,68 @@ def test_valuation_page_and_confirm_via_web(client, db, tmp_path):
     page = client.get(f"/companies/{company_id}/valuation")
     assert page.status_code == 200
     assert "DCF" in page.text or "估值" in page.text
+    # 不再有版本列表 / 版本切换 / 确认入口
+    assert "?version_id=" not in page.text
+    assert "确认本估值版本" not in page.text
+    assert "折现率 r（%）" in page.text and "FCF 增长率" in page.text
 
-    response = client.post(
-        f"/valuations/{valuation['version_id']}/confirm",
-        data={"next": "/"}, follow_redirects=False,
+
+def test_company_valuation_settings_save_and_recalculate(client, db, tmp_path):
+    company_id = _seed_company(db, tmp_path)
+    first = valuation_service.run_valuation(
+        db, company_id, shares=1_000_000_000, market_cap=200e8, market_cap_date="2026-11-01"
     )
-    assert response.status_code == 303
     db.commit()
-    assert valuation_service.valuation_view(db, valuation["version_id"])["version"]["status"] == "confirmed"
+    ev_before = valuation_repo.get_valuation(db, company_id)["enterprise_value"]
+
+    page = client.get(f"/companies/{company_id}/valuation")
+    assert "企业估值参数" in page.text and "备注1" in page.text
+    assert 'name="discount_rate"' in page.text
+    assert 'name="growth_rate_1"' in page.text
+
+    saved = client.post(
+        f"/companies/{company_id}/valuation/settings",
+        data={
+            "reason": "验证保存即重算",
+            "discount_rate": "12",
+            **{f"growth_rate_{year}": "3" for year in range(1, 11)},
+        },
+        follow_redirects=False,
+    )
+    assert saved.status_code == 303
+    db.commit()
+
+    after = client.get(f"/companies/{company_id}/valuation?saved=1")
+    assert "已保存并重算" in after.text
+    assert 'value="12.00"' in after.text
+    assert ">重新计算</button>" in after.text
+
+    # 只保留一份估值：保存参数后同一行被原地更新
+    rows = db.execute("SELECT id FROM valuations WHERE company_id=?", (company_id,)).fetchall()
+    assert len(rows) == 1
+    current = valuation_repo.get_valuation(db, company_id)
+    assert current["id"] == first["valuation_id"]
+    view = valuation_service.valuation_view(db, company_id)
+    assert view["params"]["r"] == pytest.approx(0.12)
+    assert len(view["params"]["growth_rates"]) == 10
+    assert all(rate == pytest.approx(0.03) for rate in view["params"]["growth_rates"])
+    # 折现率与增长率都参与 DCF：企业价值随参数变化，并可按公式独立复算
+    assert current["enterprise_value"] != pytest.approx(ev_before)
+    base = current["base_fcf_value"]
+    g = view["params"]["g"]
+    fcf, pv = base, 0.0
+    for year in range(1, 11):
+        fcf *= 1.03
+        pv += fcf / (1.12 ** year)
+    expected_ev = pv + fcf * (1 + g) / (0.12 - g) / (1.12 ** 10)
+    assert current["enterprise_value"] == pytest.approx(expected_ev, rel=1e-9)
+
+    recalc = client.post(
+        f"/companies/{company_id}/valuation/recalculate", data={}, follow_redirects=False
+    )
+    assert recalc.status_code == 303
+    db.commit()
+    assert db.execute("SELECT COUNT(*) AS n FROM valuations").fetchone()["n"] == 1
 
 
 def test_value_override_via_web(client, db, tmp_path):
@@ -154,20 +209,6 @@ def test_value_override_via_web(client, db, tmp_path):
     assert new_row["version_no"] == 2
 
 
-def test_discount_rate_config_via_web(client, db):
-    response = client.post(
-        "/discount-rates",
-        data={"scope": "industry", "rate": "0.11", "industry_tag": "医疗器械", "reason": "测试"},
-        follow_redirects=False,
-    )
-    assert response.status_code == 303
-    page = client.get("/discount-rates")
-    assert page.status_code == 200
-    assert "11.00%" in page.text
-
-    # 非法区间应被拒绝
-    bad = client.post(
-        "/discount-rates",
-        data={"scope": "global", "rate": "0.9", "industry_tag": "", "reason": "越界"},
-    )
-    assert bad.status_code == 400
+def test_discount_rate_config_removed(client, db):
+    assert client.get("/discount-rates").status_code == 404
+    assert client.post("/discount-rates", data={"scope": "global", "rate": "0.11"}).status_code in (404, 405)

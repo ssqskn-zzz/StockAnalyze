@@ -46,26 +46,15 @@ def confirm_high_confidence(conn, company_id: int, actor: str = "user") -> int:
 
 
 def override_value(conn, value_id: int, new_value: float, reason: str, actor: str = "user") -> int:
-    new_id = metric_repo.override(conn, value_id, new_value, reason, actor)
-    valuation_pending = _mark_company_valuations_pending(conn, metric_repo.get_value(conn, new_id)["company_id"])
-    return new_id
+    return metric_repo.override(conn, value_id, new_value, reason, actor)
 
 
 def dispute_value(conn, value_id: int, reason: str, actor: str = "user") -> None:
     metric_repo.dispute(conn, value_id, reason, actor)
 
 
-def _mark_company_valuations_pending(conn, company_id: int) -> int:
-    from app.db.repositories import valuations as valuation_repo
-    return valuation_repo.mark_pending_review(conn, company_id, "输入指标值被改值或作废")
-
-
 def create_snapshot(conn, company_id: int, reason: str = "manual", note: str = "") -> int:
-    snapshot_id = snapshot_repo.create_snapshot(conn, company_id, reason=reason, note=note)
-    # 上游快照更新 ⇒ 已确认估值转待复核（PRD 2.5 估值版本状态机）
-    from app.db.repositories import valuations as valuation_repo
-    valuation_repo.mark_pending_review(conn, company_id, "上游数据快照更新")
-    return snapshot_id
+    return snapshot_repo.create_snapshot(conn, company_id, reason=reason, note=note)
 
 
 def build_matrix(conn, company_id: int, *, include_quarters: bool = True) -> dict[str, Any]:
@@ -129,6 +118,7 @@ def build_matrix(conn, company_id: int, *, include_quarters: bool = True) -> dic
             "code": v["metric_code"],
             "unit_type": v["unit_type"],
             "year": v["fiscal_year"],
+            "period_type": v["period_type"],
             "period_label": period_label(v["period_type"], v["fiscal_year"]),
             "value": v["value"],
             "status": v["status"],
@@ -142,6 +132,14 @@ def build_matrix(conn, company_id: int, *, include_quarters: bool = True) -> dic
         "year": p["fiscal_year"],
         "key": period_sort_key(p["period_type"], p["fiscal_year"], p["period_seq"]),
     } for p in periods]
+    # 展示列：倒序（近期在前，越早在后）；衍生指标计算仍用升序 periods，故不影响 annual_ids
+    period_list = list(reversed(period_list))
+
+    # 分部数据：按报告期倒序
+    segment_rows.sort(
+        key=lambda s: period_sort_key(s["period_type"], s["year"], 0),
+        reverse=True,
+    )
 
     return {
         "periods": period_list,
@@ -248,7 +246,7 @@ def company_stats(conn, company_id: int) -> dict[str, Any]:
         "pending": metric_repo.pending_count(conn, company_id),
         "completeness": completeness(conn, company_id),
         "report": report_repo.latest_version(conn, company_id),
-        "valuation": valuation_repo.latest_version(conn, company_id),
+        "valuation": valuation_repo.get_valuation(conn, company_id),
         "snapshot": snapshot_repo.latest_snapshot(conn, company_id),
     }
 
