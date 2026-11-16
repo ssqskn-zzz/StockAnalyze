@@ -9,9 +9,10 @@ import pytest
 
 from app import config
 from app.db.repositories import companies as company_repo
+from app.db.repositories import snapshots as snapshot_repo
 from app.pipeline import downloader, public_data
 from app.services import acquire_service, ingestion_service, metric_service, report_files, report_service
-from app.utils import local_ipv4_addresses
+from app.utils import json_dumps, local_ipv4_addresses
 from tests.conftest import build_workbook
 
 
@@ -66,6 +67,41 @@ def test_public_parse_rows_maps_period_and_dedupes():
         "cash", "short_term_borrowings", "current_portion_lt_debt", "share_capital",
     }
     assert next(i for i in balance if i["metric_code"] == "cash")["period_type"] == "q3"
+
+
+def test_snapshot_coverage_sorted_by_end_date(db):
+    """报告期覆盖范围需按实际截止日期排序，不能依赖插入顺序。"""
+    company_id = company_repo.create_company(
+        db, name="覆盖排序测试", market="A", code="000001", industry="测试"
+    )
+    q1_id, _ = company_repo.get_or_create_period(db, company_id, "q1", 2026)
+    annual_id, _ = company_repo.get_or_create_period(db, company_id, "annual", 2025)
+    q3_id, _ = company_repo.get_or_create_period(db, company_id, "q3", 2026)
+    h1_id, _ = company_repo.get_or_create_period(db, company_id, "h1", 2026)
+    snapshot = {"period_ids": json_dumps([q1_id, annual_id, q3_id, h1_id])}
+
+    coverage = snapshot_repo.snapshot_coverage(db, snapshot)
+
+    assert [(c["period_type"], c["fiscal_year"]) for c in coverage] == [
+        ("annual", 2025), ("q1", 2026), ("h1", 2026), ("q3", 2026),
+    ]
+
+
+def test_public_parse_trading_fin_assets_under_new_standard():
+    """新准则下交易性金融资产可能只出现在 NOTFVTPL 字段，需映射到同一指标。"""
+    balance = public_data.parse_rows(
+        [{
+            "REPORT_DATE": "2025-12-31",
+            "MONETARYFUNDS": 100.0,
+            "TRADE_FINASSET": None,
+            "TRADE_FINASSET_NOTFVTPL": 58.99,
+        }],
+        public_data.BALANCE_FIELDS,
+    )
+    trading = [i for i in balance if i["metric_code"] == "trading_fin_assets"]
+    assert len(trading) == 1
+    assert trading[0]["value"] == pytest.approx(58.99)
+    assert trading[0]["period_type"] == "annual"
 
 
 def test_public_parse_full_statements_and_derived_margin():
