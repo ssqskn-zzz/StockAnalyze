@@ -86,7 +86,7 @@ def snapshot_coverage(conn: sqlite3.Connection, snapshot: sqlite3.Row) -> list[d
         return []
     rows = conn.execute(
         f"""SELECT period_type, fiscal_year, period_seq FROM periods
-            WHERE id IN ({','.join('?' * len(ids))}) ORDER BY fiscal_year, period_seq""",
+            WHERE id IN ({','.join('?' * len(ids))}) ORDER BY end_date, period_type""",
         ids,
     )
     return [dict(r) for r in rows]

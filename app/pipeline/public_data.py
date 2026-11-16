@@ -62,7 +62,10 @@ INCOME_FIELDS = {
 }
 BALANCE_FIELDS = {
     "MONETARYFUNDS": ("cash", "元", 1.0),
+    # 新准则下部分公司「交易性金融资产」落在 NOTFVTPL 后缀字段，
+    # 两个字段互斥出现；同一报告期只保留先命中的一项，避免重复计入净现金。
     "TRADE_FINASSET": ("trading_fin_assets", "元", 1.0),
+    "TRADE_FINASSET_NOTFVTPL": ("trading_fin_assets", "元", 1.0),
     "NOTE_ACCOUNTS_RECE": ("receivables", "元", 1.0),
     "PREPAYMENT": ("prepayments", "元", 1.0),
     "INVENTORY": ("inventory", "元", 1.0),
