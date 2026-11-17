@@ -15,6 +15,8 @@ from app.domain.periods import period_label
 from app.services import metric_service, report_files, report_writer
 from app.utils import json_loads, now_iso
 
+_QUARTER_ORDER = {"q1": 1, "h1": 2, "q3": 3, "annual": 4}
+
 
 def _snapshot_series(conn, company_id: int, snapshot, period_type: str) -> list[dict[str, Any]]:
     return metric_service.snapshot_series(conn, snapshot, period_type)
@@ -127,7 +129,7 @@ def generate_report(
     quarterly = []
     for ptype in ("h1", "q1", "q3"):
         quarterly.extend(_snapshot_series(conn, company_id, snapshot, ptype))
-    quarterly.sort(key=lambda x: (x["period"]["year"], x["period"]["type"]))
+    quarterly.sort(key=lambda x: (x["period"]["year"], _QUARTER_ORDER.get(x["period"]["type"], 9)))
     segments = _segments_from_snapshot(conn, snapshot)
     peers = _peer_rows(conn, company)
     valuation = valuation_repo.get_valuation(conn, company_id)
