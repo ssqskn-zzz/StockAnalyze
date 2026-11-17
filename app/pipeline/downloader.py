@@ -31,8 +31,8 @@ CNINFO_STATIC = "http://static.cninfo.com.cn/"
 CNINFO_CATEGORIES = {
     "annual": ("category_ndbg_szsh", "年度报告"),
     "h1": ("category_bndbg_szsh", "半年度报告"),
-    "q1": ("category_yjdbg_szsh", "第一季度报告"),
-    "q3": ("category_sjdbg_szsh", "第三季度报告"),
+    "q1": ("category_yjdbg_szsh", "季度报告"),
+    "q3": ("category_sjdbg_szsh", "季度报告"),
 }
 CNINFO_EXCLUDE = ("摘要", "英文", "已取消", "更正", "问询", "说明")
 SEC_TICKERS = "https://www.sec.gov/files/company_tickers.json"

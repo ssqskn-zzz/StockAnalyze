@@ -11,9 +11,20 @@ from app import config
 from app.db.repositories import companies as company_repo
 from app.db.repositories import snapshots as snapshot_repo
 from app.pipeline import downloader, public_data
+from app.pipeline.period_detector import detect_period
 from app.services import acquire_service, ingestion_service, metric_service, report_files, report_service
 from app.utils import json_dumps, local_ipv4_addresses
 from tests.conftest import build_workbook
+
+
+@pytest.mark.parametrize(("title", "expected"), [
+    ("2026年第一季度报告", ("q1", 2026)),
+    ("2026年一季度报告", ("q1", 2026)),
+    ("2026年第三季度报告", ("q3", 2026)),
+    ("2026年三季度报告", ("q3", 2026)),
+])
+def test_detect_period_accepts_current_cninfo_quarterly_titles(title, expected):
+    assert detect_period(title) == expected
 
 
 def test_public_parse_rows_maps_period_and_dedupes():
