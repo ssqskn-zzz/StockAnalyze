@@ -12,3 +12,6 @@ data/files/
 *.db-wal
 *.db-shm
 *.db-journal
+
+# 本地模板资源，不跟 GitHub 同步
+.trae-html-share-packages/
